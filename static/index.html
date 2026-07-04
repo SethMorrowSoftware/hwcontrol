@@ -852,7 +852,9 @@ function periodAction(p){
     if(p.heat!==""&&p.heat!=null) a.heatSetpoint=Number(p.heat);
     if(p.cool!==""&&p.cool!=null) a.coolSetpoint=Number(p.cool);
   }
-  if(p.hold) a.thermostatSetpointStatus=p.hold;
+  // Default to a permanent hold so the program overrides the thermostat's
+  // onboard/Resideo schedule instead of being reverted at the next period.
+  a.thermostatSetpointStatus = p.hold || "PermanentHold";
   return a;
 }
 function actionSummary(a){ const b=[]; if(a.mode)b.push(a.mode);
@@ -863,7 +865,7 @@ function updPeriod(i,k,v){ progPeriods[i][k]=v; if(k==="mode") renderPeriods(); 
 function addPeriod(kind){
   const P={ on:{time:"06:00",mode:"Heat",heat:70,cool:76,hold:"PermanentHold"},
             temp:{time:"12:00",mode:"",heat:70,cool:76,hold:"PermanentHold"},
-            off:{time:"22:00",mode:"Off",heat:"",cool:"",hold:""} }[kind];
+            off:{time:"22:00",mode:"Off",heat:"",cool:"",hold:"PermanentHold"} }[kind];
   progPeriods.push(Object.assign({},P)); renderPeriods();
 }
 function rmPeriod(i){ progPeriods.splice(i,1); renderPeriods(); }
@@ -871,7 +873,7 @@ function renderPeriods(){
   const c=document.getElementById("p-periods"); if(!c) return;
   if(!progPeriods.length){ c.innerHTML=`<div class="periods-empty">No periods yet — add one below (Turn ON / Set temperature / Turn OFF).</div>`; return; }
   const modeOpts=s=>["","Heat","Cool","Auto","Off"].map(m=>`<option value="${m}" ${s===m?'selected':''}>${m||'— leave mode —'}</option>`).join("");
-  const holdOpts=s=>[["","— leave hold —"],["PermanentHold","Permanent hold"],["TemporaryHold","Until next period"],["NoHold","Resume schedule"]].map(([v,l])=>`<option value="${v}" ${s===v?'selected':''}>${l}</option>`).join("");
+  const holdOpts=s=>[["PermanentHold","Permanent hold (app owns it)"],["TemporaryHold","Until next period"],["NoHold","Resume onboard schedule"]].map(([v,l])=>`<option value="${v}" ${s===v?'selected':''}>${l}</option>`).join("");
   c.innerHTML=progPeriods.map((p,i)=>{ const off=p.mode==="Off";
     return `<div class="brow period">
       <div class="f" style="flex:0 0 108px"><span class="mini">Time</span><input type="time" value="${esc(p.time||'')}" onchange="updPeriod(${i},'time',this.value)"></div>
@@ -930,7 +932,7 @@ function editProgram(id){
   t.value = Array.isArray(r.targets) ? (r.targets[0]||"all") : (r.targets||"all");
   selDays=new Set((r.days||[]).map(d=>String(d).toLowerCase()));
   progPeriods=(r.periods||[]).map(p=>{ const a=p.action||{};
-    return {time:p.time,mode:a.mode||'',heat:a.heatSetpoint??'',cool:a.coolSetpoint??'',hold:a.thermostatSetpointStatus||''}; });
+    return {time:p.time,mode:a.mode||'',heat:a.heatSetpoint??'',cool:a.coolSetpoint??'',hold:a.thermostatSetpointStatus||'PermanentHold'}; });
   document.getElementById("progFormTitle").textContent="Edit program";
   document.getElementById("p-save").textContent="Save changes";
   document.getElementById("p-cancel").hidden=false;
@@ -1167,8 +1169,8 @@ function renderActionFields(){
         <div class="fld"><label>Mode</label><div class="field sel"><select id="a-mode">
           <option value="">— leave —</option><option>Heat</option><option>Cool</option><option>Auto</option><option>Off</option></select></div></div>
         <div class="fld"><label>Hold</label><div class="field sel"><select id="a-hold">
-          <option value="">— leave —</option><option value="TemporaryHold">Until next schedule</option>
-          <option value="PermanentHold">Permanent</option><option value="NoHold">Resume schedule</option></select></div></div>
+          <option value="PermanentHold">Permanent (app owns it)</option><option value="TemporaryHold">Until next schedule</option>
+          <option value="NoHold">Resume onboard schedule</option></select></div></div>
         <div class="fld"><label>Heat setpoint</label><input id="a-heat" type="number" placeholder="—"></div>
         <div class="fld"><label>Cool setpoint</label><input id="a-cool" type="number" placeholder="—"></div>
       </div>`;
