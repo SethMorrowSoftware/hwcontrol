@@ -75,6 +75,14 @@ class Config:
     # --- Scheduler ---
     SCHEDULE_TZ = os.getenv("SCHEDULE_TZ", "")  # e.g. "America/New_York"; blank = system tz
 
+    # --- Sole Controller mode ---
+    # When on, the app continuously holds every zone under a permanent hold so the
+    # thermostats' onboard schedule and the Resideo app never drive them - this app
+    # is the single top controller. On by default; this is the intended operating
+    # mode. Can be turned off at runtime from the dashboard (persisted), which
+    # overrides this startup default.
+    SOLE_CONTROLLER = _bool("SOLE_CONTROLLER", True)
+
     # --- Server ---
     # Default port is 8010 (not 8000) so this can run on the same host as the
     # GenWatch generator monitor, which listens on 8000.

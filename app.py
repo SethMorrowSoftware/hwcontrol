@@ -85,26 +85,87 @@ def sync_automation_topics() -> None:
         bridge.sync_trigger_topics(engine.subscribed_topics())
 
 
-# ------------------------------------------------ onboard (device) schedule
-# To make this app the sole source of truth, we can disable a thermostat's own
-# onboard schedule by cancelling every period. The original is backed up first so
-# it can be restored. Backup keys are deviceIDs the app currently holds disabled.
+# ------------------------------------------------ sole controller (takeover)
+# Making this app the single top controller is done with a permanent hold, not by
+# editing the device's onboard schedule: a PermanentHold suspends the onboard
+# (Resideo-app) schedule indefinitely, and unlike the /devices/schedule endpoint
+# it works on every unit (that endpoint 404s on LCC devices). In Sole Controller
+# mode the poller re-asserts a permanent hold on any zone that isn't already held,
+# so nothing on the thermostat or in the Resideo app ever changes a zone.
+#
+# The mode is on by default (Config.SOLE_CONTROLLER) and can be toggled at runtime
+# from the dashboard; the runtime choice is persisted here so it survives restarts.
 
-ONBOARD_BACKUP = Path("onboard_backup.json")
+SOLE_CONTROL_FILE = Path("sole_control.json")
+
+# Don't re-issue a takeover to the same device more often than this, so a device
+# that (for any reason) won't report PermanentHold can't make us hammer the API.
+_TAKEOVER_COOLDOWN_SECONDS = 900
+_takeover_cooldown: dict[str, float] = {}
+_sole_control_lock = threading.Lock()
 
 
-def _load_onboard_backup() -> dict:
+def _load_sole_control() -> bool:
+    """Current Sole Controller setting: the persisted runtime choice if present,
+    otherwise the startup default from config."""
     try:
-        return json.loads(ONBOARD_BACKUP.read_text()) if ONBOARD_BACKUP.exists() else {}
+        if SOLE_CONTROL_FILE.exists():
+            return bool(json.loads(SOLE_CONTROL_FILE.read_text()).get("enabled"))
     except (OSError, ValueError):
-        return {}
+        pass
+    return Config.SOLE_CONTROLLER
 
 
-def _save_onboard_backup(data: dict) -> None:
+def _save_sole_control(enabled: bool) -> None:
     try:
-        ONBOARD_BACKUP.write_text(json.dumps(data, indent=2))
+        SOLE_CONTROL_FILE.write_text(json.dumps({"enabled": bool(enabled)}))
     except OSError as exc:
-        log.error("Could not save onboard schedule backup: %s", exc)
+        log.error("Could not persist sole-control setting: %s", exc)
+
+
+def _is_held(device: dict) -> bool:
+    """True if the app already owns this zone (it's under a permanent hold)."""
+    return (device.get("setpointStatus") or "") == "PermanentHold"
+
+
+def take_over_device(device_id: str) -> None:
+    """Assert a permanent hold on one device at its current settings, so it stops
+    following its onboard/Resideo schedule. Raises HoneywellError on failure."""
+    loc = store.location_of(device_id)
+    if loc is None:
+        raise HoneywellError(f"Unknown device {device_id} (has it been polled yet?)")
+    cached = store.get(device_id) or {}
+    current_cv = cached.get("changeableValues") or {}
+    # Merge only the hold onto the device's existing values so we freeze whatever
+    # it's doing right now (mode + setpoints) under a permanent hold.
+    client.set_thermostat(device_id, loc, {"thermostatSetpointStatus": "PermanentHold"},
+                          current_changeable=current_cv)
+    _refresh_one(device_id, loc)
+
+
+def _enforce_sole_control() -> None:
+    """Re-assert a permanent hold on every online zone that isn't already held.
+    Cheap in steady state: once a zone is held it reports PermanentHold and is
+    skipped, so this only writes when a zone is (re)discovered or drifts back to
+    following its onboard schedule."""
+    if not _load_sole_control() or not client.is_authorized:
+        return
+    now = time.time()
+    for d in store.devices():
+        did = d.get("deviceID")
+        if not did or not d.get("online") or _is_held(d):
+            continue
+        if now - _takeover_cooldown.get(did, 0.0) < _TAKEOVER_COOLDOWN_SECONDS:
+            continue
+        _takeover_cooldown[did] = now
+        try:
+            take_over_device(did)
+            log.info("Sole control: took over %s (permanent hold).", did)
+            store.add_alert("info", "sole_control",
+                            f"{d.get('name') or did} is now held by the app "
+                            f"(onboard schedule suspended).", did)
+        except HoneywellError as exc:
+            log.warning("Sole control: could not take over %s: %s", did, exc)
 
 
 # ------------------------------------------------------------ command plumbing
@@ -271,6 +332,12 @@ def _poller_loop() -> None:
                 scheduler.apply_all_active_now()
             except Exception as exc:
                 log.exception("Startup schedule assertion failed: %s", exc)
+        # Keep every zone under the app's control so the onboard/Resideo schedule
+        # never acts. Runs after schedule assertion so program setpoints win.
+        try:
+            _enforce_sole_control()
+        except Exception as exc:
+            log.exception("Sole-control enforcement failed: %s", exc)
         _poller_stop.wait(Config.POLL_INTERVAL_SECONDS)
 
 
@@ -426,13 +493,37 @@ def api_refresh():
     return {"ok": True, "message": "Refresh started"}
 
 
-# ------------------------------------------------ onboard schedule endpoints
+# ------------------------------------------------ sole controller endpoints
 
 @app.get("/api/onboard_schedule")
 def api_onboard_status():
-    """Which devices the app is currently holding with their onboard schedule
-    disabled. Reads the local backup only - no Resideo calls, so it's cheap."""
-    return {"taken_over": list(_load_onboard_backup().keys())}
+    """Per-device control state, derived from live device state (no Resideo calls):
+    a zone is 'taken over' when it's under the app's permanent hold. Also reports
+    whether Sole Controller mode is on."""
+    taken = [d["deviceID"] for d in store.devices() if _is_held(d) and d.get("deviceID")]
+    return {"taken_over": taken, "sole_control": _load_sole_control()}
+
+
+@app.get("/api/sole_control")
+def api_sole_control_get():
+    return {"enabled": _load_sole_control()}
+
+
+@app.post("/api/sole_control")
+def api_sole_control_set(payload: dict = Body(...)):
+    """Turn Sole Controller mode on or off (persisted). When turned on, the next
+    poll asserts a permanent hold on every zone; turning it off simply stops the
+    app re-asserting - zones keep whatever hold they currently have until changed."""
+    enabled = bool(payload.get("enabled"))
+    with _sole_control_lock:
+        _save_sole_control(enabled)
+    if enabled:
+        # Take control now rather than waiting for the next poll.
+        threading.Thread(target=_enforce_sole_control, daemon=True).start()
+    notify("info", "sole_control",
+           "Sole Controller mode ON - the app now holds every zone." if enabled
+           else "Sole Controller mode OFF - zones may follow their onboard schedule.")
+    return {"ok": True, "enabled": enabled}
 
 
 @app.get("/api/devices/{device_id}/raw")
@@ -465,62 +556,46 @@ def api_device_raw(device_id: str):
 
 @app.post("/api/devices/{device_id}/onboard_schedule/disable")
 def api_disable_onboard(device_id: str):
-    """Turn off a thermostat's onboard schedule by setting its schedule type to
-    'None'. The previous type is recorded so 'restore' can switch it back.
-
-    (Resideo doesn't expose the stored day/time periods to read, so we change the
-    schedule *type* rather than cancel individual periods.)"""
+    """Take control of one zone now: assert a permanent hold so it stops following
+    its onboard/Resideo schedule. Uses a normal setpoint write (which works on
+    every unit), not the /devices/schedule endpoint (which 404s on LCC devices)."""
     if not client.is_authorized:
         raise HTTPException(401, "Account not authorized. Connect it first.")
-    loc = store.location_of(device_id)
-    if loc is None:
+    if store.location_of(device_id) is None:
         raise HTTPException(404, f"Unknown device {device_id} (has it been polled yet?)")
-    cached = store.get(device_id) or {}
-    short = cached.get("scheduleTypeShort")
-    if not short or short.lower() == "none":
-        raise HTTPException(400, "This device has no active onboard schedule to disable.")
-    sub = cached.get("scheduleSubType") or "NA"
-    backup = _load_onboard_backup()
-    if device_id not in backup:          # remember the original type to restore
-        backup[device_id] = {"scheduleType": short,
-                             "scheduleTypeApi": cached.get("scheduleType"),
-                             "scheduleSubType": sub}
-        _save_onboard_backup(backup)
-    body = {"deviceID": device_id, "scheduleType": "None", "scheduleSubType": sub}
     try:
-        client.set_schedule(device_id, loc, body, schedule_type="None")
+        take_over_device(device_id)
     except HoneywellError as exc:
-        raise HTTPException(502, f"Couldn't disable the onboard schedule: {exc}")
-    notify("info", "onboard_schedule", f"Onboard schedule disabled for {device_id} "
-                                       f"(app is now the sole source of truth).")
+        raise HTTPException(502, f"Couldn't take over the thermostat: {exc}")
+    # Reset any cooldown so the poller won't fight a manual action.
+    _takeover_cooldown.pop(device_id, None)
+    notify("info", "sole_control",
+           f"App took control of {device_id} (permanent hold; onboard schedule suspended).")
     return {"ok": True, "taken_over": True}
 
 
 @app.post("/api/devices/{device_id}/onboard_schedule/restore")
 def api_restore_onboard(device_id: str):
-    """Switch a thermostat's schedule type back to what it was before takeover.
-    Resideo doesn't expose the saved periods, so custom day/time entries may need
-    to be re-created in the Resideo app."""
+    """Release one zone back to its onboard schedule (NoHold). Note: while Sole
+    Controller mode is on, the next poll will take the zone back - turn that mode
+    off first if you want the onboard schedule to run."""
     if not client.is_authorized:
         raise HTTPException(401, "Account not authorized. Connect it first.")
     loc = store.location_of(device_id)
     if loc is None:
         raise HTTPException(404, f"Unknown device {device_id}")
-    backup = _load_onboard_backup()
-    original = backup.get(device_id)
-    if not original:
-        raise HTTPException(404, "No saved onboard schedule type to restore for this device.")
-    short = original.get("scheduleType") or "Timed"
-    api = original.get("scheduleTypeApi") or short
-    sub = original.get("scheduleSubType") or "NA"
-    body = {"deviceID": device_id, "scheduleType": short, "scheduleSubType": sub}
+    cached = store.get(device_id) or {}
+    current_cv = cached.get("changeableValues") or {}
     try:
-        client.set_schedule(device_id, loc, body, schedule_type=api)
+        client.set_thermostat(device_id, loc, {"thermostatSetpointStatus": "NoHold"},
+                              current_changeable=current_cv)
+        _refresh_one(device_id, loc)
     except HoneywellError as exc:
-        raise HTTPException(502, f"Couldn't restore the onboard schedule type: {exc}")
-    backup.pop(device_id, None)
-    _save_onboard_backup(backup)
-    notify("info", "onboard_schedule", f"Onboard schedule re-enabled for {device_id}.")
+        raise HTTPException(502, f"Couldn't release the thermostat: {exc}")
+    # Cool down so the poller doesn't immediately re-grab it within one interval
+    # (it still will on a later poll if Sole Controller mode is on - by design).
+    _takeover_cooldown[device_id] = time.time()
+    notify("info", "sole_control", f"Released {device_id} to its onboard schedule.")
     return {"ok": True, "taken_over": False}
 
 
