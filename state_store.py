@@ -49,12 +49,26 @@ def _normalize(raw: dict) -> dict:
 
 
 def _schedule_type(raw: dict) -> Optional[str]:
+    """The schedule type to pass to the /devices/schedule endpoint.
+
+    A device reports scheduleType.scheduleType as a short name ("Timed"), but the
+    endpoint's `type` param wants the matching entry from availableScheduleTypes
+    ("TimedNorthAmerica"). Map the short name onto the capability list; fall back
+    to the short name if there's no list to match against."""
     st = raw.get("scheduleType")
-    if isinstance(st, dict):
-        st = st.get("scheduleType") or st.get("value")
-    if not st:
-        st = (raw.get("schedule") or {}).get("scheduleType") if isinstance(raw.get("schedule"), dict) else None
-    return st if isinstance(st, str) else None
+    cur = st.get("scheduleType") if isinstance(st, dict) else st
+    if not isinstance(cur, str) or not cur:
+        return None
+    caps = (raw.get("scheduleCapabilities") or {}).get("availableScheduleTypes") or []
+    caps = [c for c in caps if isinstance(c, str)]
+    low = cur.lower()
+    for c in caps:                       # exact match wins
+        if c.lower() == low:
+            return c
+    for c in caps:                       # else the capability that includes it
+        if c.lower().startswith(low) or low in c.lower():
+            return c
+    return cur
 
 
 # Fields whose changes are worth announcing as events.
