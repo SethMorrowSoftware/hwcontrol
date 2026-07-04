@@ -3,283 +3,463 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
 <title>Facility Climate Control</title>
+<script>
+  /* Set the theme before first paint to avoid a flash. */
+  (function(){
+    try{
+      var t = localStorage.getItem("hw-theme")
+        || (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+      document.documentElement.setAttribute("data-theme", t);
+    }catch(e){ document.documentElement.setAttribute("data-theme","dark"); }
+  })();
+</script>
 <style>
+  /* ============================ design tokens ============================ */
   :root{
-    --ink:#0F1419; --panel:#181F27; --raised:#1F2831; --line:#2A3640;
-    --text:#E8EDF2; --muted:#8A97A3; --faint:#5A6673;
-    --heat:#F2994A; --heat-dim:#4a3524;
-    --cool:#4AA8F2; --cool-dim:#1f3547;
-    --auto:#A78BFA; --off:#5A6673;
-    --ok:#4ADE80; --warn:#E8B84A; --crit:#E85A5A;
-    --mono:ui-monospace,"SF Mono","Cascadia Code","Roboto Mono",Menlo,Consolas,monospace;
     --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-    --radius:10px;
+    --mono:ui-monospace,"SF Mono","Cascadia Code","Roboto Mono",Menlo,Consolas,monospace;
+    --r-sm:8px; --r:11px; --r-lg:16px; --r-pill:999px;
+    --maxw:1400px;
+    --heat:#f2994a; --cool:#4aa8f2; --auto:#a78bfa;
   }
+  :root[data-theme="dark"]{
+    --bg:#0d1218; --inset:#0a0e13;
+    --surface:#151c25; --surface-2:#1b2531; --surface-3:#222e3b;
+    --border:#28323f; --border-strong:#3a4756;
+    --text:#e6edf3; --muted:#9aa7b3; --faint:#6b7887;
+    --accent:#4aa8f2; --accent-ink:#04233c;
+    --heat-ink:#3a2410; --heat-soft:#38291a; --heat-line:#7a5326;
+    --cool-soft:#12314a; --cool-line:#2f6a9c;
+    --auto-soft:#2a2545; --auto-line:#5b4da8;
+    --ok:#42c058; --warn:#e0b23c; --crit:#f5564a;
+    --ok-soft:#123322; --warn-soft:#3a3016; --crit-soft:#3a1e1e;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 6px 22px rgba(0,0,0,.28);
+    --shadow-sm:0 1px 2px rgba(0,0,0,.35);
+    --skel:linear-gradient(90deg,#1a232e 25%,#212c39 37%,#1a232e 63%);
+    --scrim:rgba(4,7,10,.6);
+  }
+  :root[data-theme="light"]{
+    --bg:#eef1f5; --inset:#e6ebf1;
+    --surface:#ffffff; --surface-2:#f3f6f9; --surface-3:#e9eef4;
+    --border:#dce3ea; --border-strong:#c4cfdb;
+    --text:#17212b; --muted:#556370; --faint:#8592a0;
+    --accent:#1f7fd6; --accent-ink:#ffffff;
+    --heat:#d9772a; --cool:#1f7fd6; --auto:#7458e6;
+    --heat-ink:#ffffff; --heat-soft:#fbeadb; --heat-line:#eab98d;
+    --cool-soft:#e3f0fb; --cool-line:#a8d1f2;
+    --auto-soft:#efeafd; --auto-line:#c8bcf5;
+    --ok:#1a7f37; --warn:#9a6700; --crit:#cf222e;
+    --ok-soft:#e6f4ea; --warn-soft:#fbf1d6; --crit-soft:#fce8e8;
+    --shadow:0 1px 2px rgba(16,24,40,.06),0 6px 18px rgba(16,24,40,.09);
+    --shadow-sm:0 1px 2px rgba(16,24,40,.07);
+    --skel:linear-gradient(90deg,#e9eef4 25%,#f1f5f9 37%,#e9eef4 63%);
+    --scrim:rgba(20,28,38,.35);
+  }
+
+  /* ============================ base ============================ */
   *{box-sizing:border-box}
-  html,body{margin:0;background:var(--ink);color:var(--text);font-family:var(--sans);
-    -webkit-font-smoothing:antialiased;font-size:15px;line-height:1.5}
-  a{color:var(--cool);text-decoration:none}
-  button{font-family:inherit}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:15px;
+    line-height:1.5;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  h1,h2,h3{margin:0}
+  a{color:var(--accent);text-decoration:none}
+  button{font-family:inherit;color:inherit}
+  ::selection{background:color-mix(in srgb,var(--accent) 35%,transparent)}
+  *:focus{outline:none}
+  *:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+  .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+    clip:rect(0,0,0,0);white-space:nowrap;border:0}
+  .skip{position:absolute;left:8px;top:-60px;z-index:200;background:var(--accent);
+    color:var(--accent-ink);padding:9px 16px;border-radius:var(--r-sm);font-weight:600;
+    font-size:13px;transition:top .15s}
+  .skip:focus{top:8px}
 
-  /* ---- top bar ---- */
-  header{position:sticky;top:0;z-index:20;background:rgba(15,20,25,.92);
-    backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
-  .bar{display:flex;align-items:center;gap:18px;padding:14px 22px;max-width:1400px;margin:0 auto}
-  .brand{display:flex;align-items:baseline;gap:10px;margin-right:auto}
-  .brand h1{font-size:16px;font-weight:600;letter-spacing:.02em;margin:0}
-  .brand .sub{font-size:12px;color:var(--muted);font-family:var(--mono)}
-  .pills{display:flex;align-items:center;gap:14px;font-size:12px;color:var(--muted);
-    font-family:var(--mono)}
-  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;
-    vertical-align:middle;background:var(--faint)}
-  .dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  /* scrollbars */
+  *{scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:99px;
+    border:3px solid transparent;background-clip:content-box}
+
+  /* ============================ header ============================ */
+  header{position:sticky;top:0;z-index:30;background:color-mix(in srgb,var(--bg) 88%,transparent);
+    backdrop-filter:blur(10px);border-bottom:1px solid var(--border)}
+  .bar{display:flex;align-items:center;gap:16px;padding:12px 22px;max-width:var(--maxw);margin:0 auto}
+  .brand{display:flex;align-items:center;gap:11px;margin-right:auto;min-width:0}
+  .brand .mark{width:34px;height:34px;border-radius:10px;flex:none;display:grid;place-items:center;
+    background:linear-gradient(140deg,var(--cool),var(--auto));color:#fff;box-shadow:var(--shadow-sm)}
+  .brand .mark svg{width:19px;height:19px}
+  .brand .txt{min-width:0}
+  .brand h1{font-size:15.5px;font-weight:650;letter-spacing:.01em;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis}
+  .brand .sub{font-size:11.5px;color:var(--muted);font-family:var(--mono)}
+
+  .status{display:flex;align-items:center;gap:14px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+  .stat-item{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+  .stat-item b{color:var(--text);font-weight:600}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--faint);flex:none;position:relative}
+  .dot.on{background:var(--ok)}
+  .dot.on::after{content:"";position:absolute;inset:-3px;border-radius:50%;
+    background:var(--ok);opacity:.28;animation:pulse 2.2s ease-out infinite}
   .dot.off{background:var(--crit)}
-  .btn{background:var(--raised);border:1px solid var(--line);color:var(--text);
-    padding:7px 13px;border-radius:var(--radius);cursor:pointer;font-size:13px;
-    transition:border-color .15s,background .15s}
-  .btn:hover{border-color:var(--muted);background:#26313c}
-  .btn:active{transform:scale(.98)}
-  .btn.primary{background:var(--cool);border-color:var(--cool);color:#06243c;font-weight:600}
-  .btn.primary:hover{filter:brightness(1.08)}
-  .btn.warm{background:var(--heat);border-color:var(--heat);color:#3a2410;font-weight:600}
+  @keyframes pulse{0%{transform:scale(.7);opacity:.4}70%{transform:scale(1.8);opacity:0}100%{opacity:0}}
+  .conn{display:none;align-items:center;gap:6px;color:var(--crit);font-weight:600;
+    background:var(--crit-soft);border:1px solid color-mix(in srgb,var(--crit) 40%,transparent);
+    padding:3px 9px;border-radius:var(--r-pill)}
+  .conn.show{display:inline-flex}
+  .actions{display:flex;align-items:center;gap:8px;flex:none}
 
-  nav.tabs{display:flex;gap:4px;padding:0 22px;max-width:1400px;margin:0 auto}
-  nav.tabs button{background:none;border:none;color:var(--muted);padding:11px 4px;
-    margin-right:22px;cursor:pointer;font-size:13px;border-bottom:2px solid transparent}
-  nav.tabs button.active{color:var(--text);border-bottom-color:var(--cool)}
-  nav.tabs button .count{color:var(--faint);font-family:var(--mono);margin-left:6px}
+  /* ============================ tabs ============================ */
+  .tabwrap{border-bottom:1px solid var(--border)}
+  nav.tabs{display:flex;gap:2px;padding:0 22px;max-width:var(--maxw);margin:0 auto;overflow-x:auto}
+  nav.tabs button{background:none;border:none;color:var(--muted);padding:12px 14px;cursor:pointer;
+    font-size:13.5px;font-weight:500;border-bottom:2px solid transparent;white-space:nowrap;
+    display:inline-flex;align-items:center;gap:7px;transition:color .15s}
+  nav.tabs button:hover{color:var(--text)}
+  nav.tabs button.active{color:var(--text);border-bottom-color:var(--accent)}
+  nav.tabs .count{min-width:20px;padding:1px 7px;border-radius:var(--r-pill);font-size:11px;
+    font-family:var(--mono);background:var(--surface-2);color:var(--muted);line-height:1.5}
+  nav.tabs button.active .count{background:color-mix(in srgb,var(--accent) 20%,transparent);color:var(--accent)}
 
-  main{max-width:1400px;margin:0 auto;padding:22px}
+  main{max-width:var(--maxw);margin:0 auto;padding:22px}
   .view{display:none}
-  .view.active{display:block}
+  .view.active{display:block;animation:fade .18s ease}
+  @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 
-  /* ---- banner ---- */
-  .banner{display:flex;align-items:center;gap:14px;background:var(--panel);
-    border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;margin-bottom:20px}
-  .banner.warn{border-color:#5a4a1e}
+  /* ============================ buttons ============================ */
+  .btn{--b:var(--surface-2);background:var(--b);border:1px solid var(--border);color:var(--text);
+    padding:8px 14px;border-radius:var(--r-sm);cursor:pointer;font-size:13px;font-weight:500;
+    display:inline-flex;align-items:center;justify-content:center;gap:7px;white-space:nowrap;
+    transition:background .15s,border-color .15s,transform .06s,box-shadow .15s}
+  .btn:hover{background:var(--surface-3);border-color:var(--border-strong)}
+  .btn:active{transform:scale(.97)}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+  .btn.primary:hover{background:color-mix(in srgb,var(--accent) 88%,#fff);border-color:transparent}
+  .btn.warm{background:var(--heat);border-color:var(--heat);color:var(--heat-ink);font-weight:600}
+  .btn.warm:hover{background:color-mix(in srgb,var(--heat) 88%,#fff)}
+  .btn.ghost{background:transparent}
+  .btn.ghost:hover{background:var(--surface-2)}
+  .btn.danger{background:transparent;border-color:transparent;color:var(--crit);padding:8px 10px}
+  .btn.danger:hover{background:var(--crit-soft);border-color:color-mix(in srgb,var(--crit) 35%,transparent)}
+  .btn.sm{padding:6px 10px;font-size:12px}
+  .btn svg{width:15px;height:15px;flex:none}
+  .btn[aria-busy="true"]{pointer-events:none}
+  .btn[aria-busy="true"]::before{content:"";width:13px;height:13px;border:2px solid currentColor;
+    border-top-color:transparent;border-radius:50%;animation:spin .6s linear infinite;flex:none}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .iconbtn{width:36px;height:36px;padding:0;border-radius:var(--r-sm);flex:none}
+  .iconbtn svg{width:17px;height:17px}
 
-  /* ---- zone grid ---- */
-  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;
-    padding:16px 18px 18px;position:relative;overflow:hidden}
-  .card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--off)}
-  .card.mode-heat::before{background:var(--heat);box-shadow:0 0 16px var(--heat)}
-  .card.mode-cool::before{background:var(--cool);box-shadow:0 0 16px var(--cool)}
+  /* ============================ banner ============================ */
+  .banner{display:flex;align-items:center;gap:16px;background:var(--surface);
+    border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:var(--r);
+    padding:15px 18px;margin-bottom:20px;box-shadow:var(--shadow-sm)}
+  .banner .b-ic{width:34px;height:34px;border-radius:9px;flex:none;display:grid;place-items:center;
+    background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent)}
+  .banner .b-ic svg{width:18px;height:18px}
+  .banner .b-title{font-weight:650;margin-bottom:2px}
+  .banner .b-sub{color:var(--muted);font-size:13px}
+
+  /* ============================ zone grid ============================ */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:16px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);
+    padding:16px 18px 18px;position:relative;overflow:hidden;box-shadow:var(--shadow-sm);
+    transition:border-color .15s,box-shadow .15s}
+  .card:hover{box-shadow:var(--shadow)}
+  .card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--faint)}
+  .card.mode-heat::before{background:var(--heat)}
+  .card.mode-cool::before{background:var(--cool)}
   .card.mode-auto::before{background:var(--auto)}
-  .card.offline{opacity:.55}
-  .card.offline::before{background:var(--faint);box-shadow:none}
-  .card.dirty{border-color:var(--muted)}
+  .card.offline{opacity:.62}
+  .card.offline::before{background:var(--faint)}
+  .card.dirty{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent),var(--shadow)}
 
-  .chead{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:12px}
-  .cname{font-size:15px;font-weight:600;line-height:1.3}
+  .chead{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px}
+  .cname{font-size:15px;font-weight:650;line-height:1.25;overflow-wrap:anywhere}
   .cid{font-size:11px;color:var(--faint);font-family:var(--mono);margin-top:2px}
-  .status{font-size:11px;font-family:var(--mono);white-space:nowrap}
-  .status .dot{width:7px;height:7px}
+  .badge{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:600;
+    font-family:var(--mono);letter-spacing:.03em;padding:3px 8px;border-radius:var(--r-pill);
+    background:var(--ok-soft);color:var(--ok);white-space:nowrap;flex:none}
+  .badge.off{background:var(--crit-soft);color:var(--crit)}
 
-  .readout{display:flex;align-items:flex-end;gap:16px;margin:6px 0 16px}
-  .temp{font-family:var(--mono);font-size:44px;font-weight:600;line-height:.9;letter-spacing:-.02em}
-  .temp .u{font-size:18px;color:var(--muted);font-weight:400;margin-left:2px}
-  .meta{font-size:12px;color:var(--muted);font-family:var(--mono);line-height:1.6}
+  .readout{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin:4px 0 15px}
+  .temp{font-family:var(--mono);font-size:46px;font-weight:650;line-height:.9;letter-spacing:-.02em}
+  .temp .u{font-size:18px;color:var(--muted);font-weight:400;margin-left:1px}
+  .meta{font-size:12px;color:var(--muted);text-align:right;line-height:1.7}
+  .meta .m{display:inline-flex;align-items:center;gap:5px;justify-content:flex-end}
+  .meta svg{width:13px;height:13px;opacity:.75}
 
-  .modes{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
-  .chip{background:var(--raised);border:1px solid var(--line);color:var(--muted);
-    padding:5px 11px;border-radius:20px;font-size:12px;cursor:pointer}
-  .chip:hover{border-color:var(--muted)}
-  .chip.sel{color:var(--text);font-weight:600}
-  .chip.sel[data-mode="Heat"]{background:var(--heat-dim);border-color:var(--heat);color:var(--heat)}
-  .chip.sel[data-mode="Cool"]{background:var(--cool-dim);border-color:var(--cool);color:var(--cool)}
-  .chip.sel[data-mode="Auto"]{border-color:var(--auto);color:var(--auto)}
-  .chip.sel[data-mode="Off"]{border-color:var(--faint);color:var(--text)}
+  .modes{display:flex;gap:0;margin-bottom:14px;background:var(--inset);border:1px solid var(--border);
+    border-radius:var(--r-sm);padding:3px}
+  .chip{flex:1;background:none;border:none;color:var(--muted);padding:6px 4px;border-radius:6px;
+    font-size:12.5px;font-weight:600;cursor:pointer;transition:background .12s,color .12s}
+  .chip:hover{color:var(--text)}
+  .chip.sel[data-mode="Heat"]{background:var(--heat-soft);color:var(--heat)}
+  .chip.sel[data-mode="Cool"]{background:var(--cool-soft);color:var(--cool)}
+  .chip.sel[data-mode="Auto"]{background:var(--auto-soft);color:var(--auto)}
+  .chip.sel[data-mode="Off"]{background:var(--surface-3);color:var(--text)}
 
-  .sp{display:flex;gap:12px;margin-bottom:14px}
-  .spbox{flex:1;background:var(--ink);border:1px solid var(--line);border-radius:var(--radius);
-    padding:9px 10px}
-  .spbox .lbl{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
-    display:flex;align-items:center;gap:5px}
-  .spbox.heat .lbl::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--heat)}
-  .spbox.cool .lbl::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--cool)}
-  .stepper{display:flex;align-items:center;justify-content:space-between;margin-top:5px}
-  .stepper button{width:26px;height:26px;border-radius:6px;border:1px solid var(--line);
-    background:var(--raised);color:var(--text);font-size:16px;cursor:pointer;line-height:1}
-  .stepper button:hover{border-color:var(--muted)}
-  .stepper .val{font-family:var(--mono);font-size:20px;font-weight:600}
+  .sp{display:flex;gap:12px;margin-bottom:13px}
+  .spbox{flex:1;background:var(--inset);border:1px solid var(--border);border-radius:var(--r-sm);padding:9px 11px}
+  .spbox .lbl{font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);
+    display:flex;align-items:center;gap:6px;font-weight:600}
+  .spbox .lbl::before{content:"";width:7px;height:7px;border-radius:50%}
+  .spbox.heat .lbl::before{background:var(--heat)}
+  .spbox.cool .lbl::before{background:var(--cool)}
+  .stepper{display:flex;align-items:center;justify-content:space-between;margin-top:6px}
+  .stepper button{width:30px;height:30px;border-radius:7px;border:1px solid var(--border);
+    background:var(--surface-2);color:var(--text);font-size:17px;cursor:pointer;line-height:1;
+    display:grid;place-items:center;transition:background .12s,border-color .12s}
+  .stepper button:hover{background:var(--surface-3);border-color:var(--border-strong)}
+  .stepper button:disabled{opacity:.4;cursor:not-allowed}
+  .stepper .val{font-family:var(--mono);font-size:21px;font-weight:650}
 
-  .row{display:flex;gap:10px;align-items:center}
-  select{background:var(--ink);border:1px solid var(--line);color:var(--text);
-    padding:7px 9px;border-radius:var(--radius);font-size:12px;font-family:var(--sans);flex:1}
-  .apply{margin-top:14px;display:flex;gap:10px;align-items:center}
-  .apply .btn{flex:1;text-align:center}
-  .hint{font-size:11px;color:var(--faint);font-family:var(--mono)}
+  .field{position:relative;margin-bottom:2px}
+  select,input{font-family:var(--sans)}
+  select{width:100%;background:var(--inset);border:1px solid var(--border);color:var(--text);
+    padding:9px 30px 9px 11px;border-radius:var(--r-sm);font-size:13px;cursor:pointer;
+    appearance:none;-webkit-appearance:none;transition:border-color .15s}
+  select:hover{border-color:var(--border-strong)}
+  select:focus-visible{border-color:var(--accent)}
+  .field.sel::after{content:"";position:absolute;right:12px;top:50%;width:8px;height:8px;
+    border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);
+    transform:translateY(-70%) rotate(45deg);pointer-events:none}
+  .apply{margin-top:14px;display:flex;gap:10px}
+  .apply .btn{flex:1}
 
-  /* ---- schedules ---- */
-  .rule{display:flex;align-items:center;gap:16px;background:var(--panel);
-    border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;margin-bottom:10px}
-  .rule .when{font-family:var(--mono);font-size:13px;color:var(--cool);min-width:150px}
-  .rule .what{font-size:13px;color:var(--muted);flex:1}
-  .rule .rname{font-weight:600;color:var(--text)}
-  .toggle{width:38px;height:22px;border-radius:12px;background:var(--faint);position:relative;
-    cursor:pointer;border:none;flex:none}
-  .toggle.on{background:var(--ok)}
-  .toggle::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;
-    border-radius:50%;background:#fff;transition:left .15s}
-  .toggle.on::after{left:18px}
-  .form{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
-    padding:18px;margin-top:6px;display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
-  .form label{font-size:12px;color:var(--muted);display:block;margin-bottom:5px}
-  .form input,.form select{width:100%;background:var(--ink);border:1px solid var(--line);
-    color:var(--text);padding:8px 10px;border-radius:8px;font-size:13px;font-family:var(--sans)}
-  .form .full{grid-column:1/-1}
+  /* ============================ forms ============================ */
+  .card-lg{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);
+    padding:20px;margin-bottom:18px;box-shadow:var(--shadow-sm)}
+  .card-lg.accent{border-top:3px solid var(--heat)}
+  .card-lg h3{font-size:15.5px;font-weight:650;margin-bottom:5px;display:flex;align-items:center;gap:9px}
+  .card-lg h3 svg{width:18px;height:18px;color:var(--heat)}
+  .desc{color:var(--muted);font-size:13px;margin-bottom:18px;max-width:70ch}
+  .form-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:15px}
+  .form-grid .full{grid-column:1/-1}
+  .fld label,.form-grid label{font-size:12px;color:var(--muted);display:block;margin-bottom:6px;font-weight:500}
+  .fld input,.form-grid input,.fld select,.form-grid select{width:100%;background:var(--inset);
+    border:1px solid var(--border);color:var(--text);padding:9px 11px;border-radius:var(--r-sm);font-size:13px}
+  .fld input:focus-visible,.form-grid input:focus-visible{border-color:var(--accent)}
+  .fld input.mono,.form-grid input.mono{font-family:var(--mono)}
+  input::placeholder{color:var(--faint)}
+
   .days{display:flex;gap:6px;flex-wrap:wrap}
-  .days .d{padding:6px 10px;border:1px solid var(--line);border-radius:8px;font-size:12px;
-    cursor:pointer;color:var(--muted);font-family:var(--mono);background:var(--ink)}
-  .days .d.on{background:var(--cool-dim);border-color:var(--cool);color:var(--cool)}
+  .days .d{padding:7px 12px;border:1px solid var(--border);border-radius:var(--r-sm);font-size:12px;
+    cursor:pointer;color:var(--muted);font-family:var(--mono);background:var(--inset);
+    text-transform:uppercase;letter-spacing:.03em;transition:all .12s}
+  .days .d:hover{border-color:var(--border-strong);color:var(--text)}
+  .days .d.on{background:var(--cool-soft);border-color:var(--cool-line);color:var(--cool);font-weight:600}
 
-  /* ---- alerts ---- */
-  .alert{display:flex;align-items:center;gap:14px;padding:12px 16px;border-radius:var(--radius);
-    background:var(--panel);border:1px solid var(--line);border-left-width:3px;margin-bottom:8px}
+  /* toggle switch */
+  .toggle{width:40px;height:23px;border-radius:var(--r-pill);background:var(--border-strong);
+    position:relative;cursor:pointer;border:none;flex:none;transition:background .18s}
+  .toggle.on{background:var(--ok)}
+  .toggle::after{content:"";position:absolute;top:2.5px;left:2.5px;width:18px;height:18px;
+    border-radius:50%;background:#fff;box-shadow:var(--shadow-sm);transition:left .18s}
+  .toggle.on::after{left:19.5px}
+
+  /* pickers */
+  .picker{background:var(--inset);border:1px solid var(--border);border-radius:var(--r-sm);padding:8px;
+    max-height:180px;overflow:auto}
+  .picker .selall{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--muted);
+    padding:5px 4px 8px;margin-bottom:6px;border-bottom:1px solid var(--border);font-weight:600}
+  .picker .opt{display:flex;align-items:center;gap:9px;font-size:13px;padding:5px 4px;border-radius:6px;cursor:pointer}
+  .picker .opt:hover{background:var(--surface-2)}
+  .picker .opt .cid{color:var(--faint);font-family:var(--mono);font-size:11px;margin-left:auto}
+  .picker input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent);cursor:pointer;flex:none}
+  .picker.empty{color:var(--faint);font-size:12.5px;padding:16px;text-align:center}
+
+  /* ============================ rules / automations lists ============================ */
+  .sectitle{font-size:11.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);
+    margin:26px 0 12px;font-weight:600}
+  .sectitle:first-child{margin-top:0}
+  .rule,.auto-item{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
+    box-shadow:var(--shadow-sm);margin-bottom:10px}
+  .rule{display:flex;align-items:center;gap:16px;padding:14px 16px}
+  .rule .when{font-family:var(--mono);font-size:12.5px;color:var(--accent);min-width:145px;font-weight:500}
+  .rule .what{font-size:13px;color:var(--muted);flex:1;overflow-wrap:anywhere}
+  .rule .rname{font-weight:650;color:var(--text)}
+  .auto-item{padding:15px 16px}
+  .auto-item.disabled{opacity:.6}
+  .auto-head{display:flex;align-items:center;gap:13px}
+  .auto-head .aname{font-weight:650;overflow-wrap:anywhere}
+  .flexspace{margin-left:auto;display:flex;gap:8px;flex:none}
+  .auto-trigger{font-family:var(--mono);font-size:12px;color:var(--accent);margin-top:10px}
+  .auto-trigger b{color:var(--text)}
+  .auto-actions{font-size:12.5px;color:var(--muted);margin-top:8px;line-height:1.9}
+  .tag{font-family:var(--mono);font-size:10.5px;padding:2px 8px;border-radius:5px;
+    background:var(--surface-2);color:var(--muted);margin-right:7px;font-weight:600}
+  .actrow{display:flex;align-items:center;gap:11px;background:var(--inset);border:1px solid var(--border);
+    border-radius:var(--r-sm);padding:9px 12px;margin-bottom:8px;font-size:13px}
+  .actrow .body{flex:1;color:var(--muted);overflow-wrap:anywhere}
+  .actrow .x{cursor:pointer;color:var(--faint);border:none;background:none;font-size:15px;
+    width:26px;height:26px;border-radius:6px;flex:none;display:grid;place-items:center}
+  .actrow .x:hover{color:var(--crit);background:var(--crit-soft)}
+
+  .stripe{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:20px}
+  .stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);
+    padding:9px 13px;font-size:12px;color:var(--muted);display:inline-flex;align-items:center;gap:8px;
+    box-shadow:var(--shadow-sm)}
+  .stat b{color:var(--text);font-weight:650}
+  .stat.live{border-color:var(--heat-line);background:var(--heat-soft)}
+  .stat.live b{color:var(--heat)}
+  .stat.warnbox{border-color:var(--warn);background:var(--warn-soft);color:var(--text)}
+
+  details.adv{margin-top:6px}
+  details.adv>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:500;padding:10px 0;
+    list-style:none;display:flex;align-items:center;gap:8px}
+  details.adv>summary::-webkit-details-marker{display:none}
+  details.adv>summary::before{content:"";width:7px;height:7px;border-right:2px solid currentColor;
+    border-bottom:2px solid currentColor;transform:rotate(-45deg);transition:transform .15s}
+  details.adv[open]>summary{color:var(--text)}
+  details.adv[open]>summary::before{transform:rotate(45deg)}
+
+  /* ============================ alerts ============================ */
+  .alert{display:flex;align-items:center;gap:13px;padding:13px 16px;border-radius:var(--r);
+    background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--faint);
+    margin-bottom:8px;box-shadow:var(--shadow-sm)}
   .alert.critical{border-left-color:var(--crit)}
   .alert.warning{border-left-color:var(--warn)}
-  .alert.info{border-left-color:var(--cool)}
-  .alert .msg{flex:1;font-size:14px}
-  .alert .ts{font-size:11px;color:var(--faint);font-family:var(--mono)}
-  .alert .sev{font-size:10px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;
-    font-family:var(--mono)}
-  .alert.critical .sev{color:var(--crit)} .alert.warning .sev{color:var(--warn)}
-  .alert.info .sev{color:var(--cool)}
+  .alert.info{border-left-color:var(--accent)}
+  .alert .a-ic{width:28px;height:28px;border-radius:8px;flex:none;display:grid;place-items:center}
+  .alert .a-ic svg{width:16px;height:16px}
+  .alert.critical .a-ic{background:var(--crit-soft);color:var(--crit)}
+  .alert.warning .a-ic{background:var(--warn-soft);color:var(--warn)}
+  .alert.info .a-ic{background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent)}
+  .alert .msg{flex:1;font-size:14px;overflow-wrap:anywhere}
+  .alert .ts{font-size:11px;color:var(--faint);font-family:var(--mono);white-space:nowrap}
 
-  .empty{text-align:center;color:var(--muted);padding:60px 20px;font-size:14px}
-  .empty .big{font-size:16px;color:var(--text);margin-bottom:6px}
-  .sectitle{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
-    margin:26px 0 12px}
-  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--raised);
-    border:1px solid var(--line);border-radius:var(--radius);padding:12px 18px;font-size:13px;
-    z-index:50;opacity:0;transition:opacity .2s;pointer-events:none}
-  .toast.show{opacity:1}
-  .toast.err{border-color:var(--crit);color:var(--crit)}
+  /* ============================ empty & skeleton ============================ */
+  .empty{text-align:center;color:var(--muted);padding:56px 20px;font-size:14px}
+  .empty .e-ic{width:52px;height:52px;border-radius:14px;margin:0 auto 14px;display:grid;
+    place-items:center;background:var(--surface-2);color:var(--faint)}
+  .empty .e-ic svg{width:26px;height:26px}
+  .empty .big{font-size:16px;color:var(--text);margin-bottom:6px;font-weight:650}
+  .empty .lede{max-width:44ch;margin:0 auto}
+  .skel{position:relative;overflow:hidden;background:var(--surface);border:1px solid var(--border);
+    border-radius:var(--r-lg);height:250px}
+  .skel::after{content:"";position:absolute;inset:0;background:var(--skel);background-size:400% 100%;
+    animation:shimmer 1.3s ease-in-out infinite}
+  @keyframes shimmer{0%{background-position:100% 0}100%{background-position:-100% 0}}
 
-  /* ---- automations ---- */
-  .stripe{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:20px}
-  .stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
-    padding:10px 14px;font-size:12px;font-family:var(--mono);color:var(--muted)}
-  .stat b{color:var(--text);font-weight:600}
-  .stat.live{border-color:var(--heat)} .stat.live b{color:var(--heat)}
-  .autocard{background:var(--panel);border:1px solid var(--line);border-radius:14px;
-    padding:18px 20px;margin-bottom:18px}
-  .autocard h3{margin:0 0 4px;font-size:15px;font-weight:600}
-  .autocard .desc{color:var(--muted);font-size:13px;margin-bottom:16px}
-  .autocard.accent{border-color:#4a3a1e}
-  .subgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
-  .subgrid .full{grid-column:1/-1}
-  .fld label{font-size:12px;color:var(--muted);display:block;margin-bottom:5px}
-  .fld input,.fld select{width:100%;background:var(--ink);border:1px solid var(--line);
-    color:var(--text);padding:8px 10px;border-radius:8px;font-size:13px;font-family:var(--sans)}
-  .fld input.mono{font-family:var(--mono)}
-  .picker{background:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px;
-    max-height:132px;overflow:auto}
-  .picker .selall{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);
-    padding-bottom:6px;margin-bottom:6px;border-bottom:1px solid var(--line)}
-  .picker .opt{display:flex;align-items:center;gap:8px;font-size:13px;padding:3px 2px}
-  .picker .opt .cid{color:var(--faint);font-family:var(--mono);font-size:11px;margin-left:auto}
-  .picker.empty{color:var(--faint);font-size:12px;font-family:var(--mono);padding:12px}
-  .actrow{display:flex;align-items:center;gap:10px;background:var(--ink);border:1px solid var(--line);
-    border-radius:8px;padding:9px 12px;margin-bottom:8px;font-size:13px}
-  .actrow .tag{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:5px;
-    background:var(--raised);color:var(--cool)}
-  .actrow .body{flex:1;color:var(--muted)}
-  .actrow .x{cursor:pointer;color:var(--faint);border:none;background:none;font-size:16px}
-  .actrow .x:hover{color:var(--crit)}
-  .auto-item{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
-    padding:14px 16px;margin-bottom:10px}
-  .auto-item.disabled{opacity:.55}
-  .auto-head{display:flex;align-items:center;gap:14px}
-  .auto-head .aname{font-weight:600}
-  .auto-trigger{font-family:var(--mono);font-size:12px;color:var(--cool);margin:8px 0 0}
-  .auto-actions{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.7}
-  .auto-actions .tag{font-family:var(--mono);background:var(--raised);color:var(--muted);
-    padding:1px 7px;border-radius:5px;margin-right:6px}
-  .flexspace{margin-left:auto;display:flex;gap:8px}
-  details.adv summary{cursor:pointer;color:var(--muted);font-size:13px;padding:6px 0}
-  details.adv[open] summary{color:var(--text);margin-bottom:12px}
+  /* ============================ toast ============================ */
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(12px);
+    background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--r);
+    padding:12px 16px;font-size:13px;font-weight:500;z-index:60;box-shadow:var(--shadow);
+    display:flex;align-items:center;gap:10px;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;
+    max-width:calc(100vw - 32px)}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .toast .t-ic{width:18px;height:18px;flex:none;display:grid;place-items:center}
+  .toast .t-ic svg{width:18px;height:18px}
+  .toast.ok .t-ic{color:var(--ok)} .toast.err{border-color:var(--crit)} .toast.err .t-ic{color:var(--crit)}
+
+  /* ============================ confirm dialog ============================ */
+  dialog{border:1px solid var(--border-strong);background:var(--surface);color:var(--text);
+    border-radius:var(--r-lg);padding:0;max-width:420px;width:calc(100vw - 32px);box-shadow:var(--shadow)}
+  dialog::backdrop{background:var(--scrim);backdrop-filter:blur(2px)}
+  .dlg-body{padding:22px 22px 8px}
+  .dlg-body h3{font-size:16px;font-weight:650;margin-bottom:8px}
+  .dlg-body p{color:var(--muted);font-size:13.5px;margin:0}
+  .dlg-foot{display:flex;justify-content:flex-end;gap:10px;padding:16px 22px 20px}
+
+  /* ============================ responsive ============================ */
+  @media(max-width:720px){
+    .bar{flex-wrap:wrap;gap:10px 14px;padding:12px 16px}
+    .brand{margin-right:0;order:1}
+    .actions{order:2;margin-left:auto}
+    .status{order:3;width:100%;gap:12px}
+    nav.tabs{padding:0 10px}
+    main{padding:16px}
+    .form-grid{grid-template-columns:1fr}
+    .grid{grid-template-columns:1fr}
+    .rule{flex-wrap:wrap;gap:10px}
+    .rule .when{min-width:0}
+    .rule .what{flex-basis:100%;order:3}
+  }
+  @media(prefers-reduced-motion:reduce){
+    *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;
+      transition-duration:.001ms!important}
+  }
 </style>
 </head>
 <body>
+<a class="skip" href="#main">Skip to content</a>
+
 <header>
   <div class="bar">
     <div class="brand">
-      <h1>Facility Climate Control</h1>
-      <span class="sub" id="clock"></span>
+      <span class="mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 14.76V5a2 2 0 0 0-4 0v9.76a4 4 0 1 0 4 0z"/></svg>
+      </span>
+      <div class="txt">
+        <h1>Facility Climate Control</h1>
+        <div class="sub" id="clock" aria-hidden="true"></div>
+      </div>
     </div>
-    <div class="pills">
-      <span><span class="dot" id="authDot"></span><span id="authText">checking…</span></span>
-      <span><span class="dot" id="mqttDot"></span>MQTT</span>
-      <span id="pollText">—</span>
+
+    <div class="status" role="status" aria-live="off">
+      <span class="conn" id="connState"><span class="dot off"></span>Offline — reconnecting…</span>
+      <span class="stat-item"><span class="dot" id="authDot"></span><span id="authText">checking…</span></span>
+      <span class="stat-item"><span class="dot" id="mqttDot"></span>MQTT</span>
+      <span class="stat-item" id="pollText">—</span>
     </div>
-    <button class="btn" id="refreshBtn">Refresh now</button>
+
+    <div class="actions">
+      <button class="btn iconbtn ghost" id="themeBtn" title="Toggle theme" aria-label="Toggle light/dark theme"></button>
+      <button class="btn" id="refreshBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        <span>Refresh</span>
+      </button>
+    </div>
   </div>
-  <nav class="tabs">
-    <button data-tab="zones" class="active">Zones <span class="count" id="zoneCount"></span></button>
-    <button data-tab="automations">Automations <span class="count" id="autoCount"></span></button>
-    <button data-tab="schedules">Schedules <span class="count" id="schedCount"></span></button>
-    <button data-tab="alerts">Alerts <span class="count" id="alertCount"></span></button>
-  </nav>
+
+  <div class="tabwrap">
+    <nav class="tabs" role="tablist" aria-label="Sections">
+      <button role="tab" id="tab-zones" aria-controls="view-zones" aria-selected="true" data-tab="zones" class="active">Zones <span class="count" id="zoneCount">0</span></button>
+      <button role="tab" id="tab-automations" aria-controls="view-automations" aria-selected="false" tabindex="-1" data-tab="automations">Automations <span class="count" id="autoCount">0</span></button>
+      <button role="tab" id="tab-schedules" aria-controls="view-schedules" aria-selected="false" tabindex="-1" data-tab="schedules">Schedules <span class="count" id="schedCount">0</span></button>
+      <button role="tab" id="tab-alerts" aria-controls="view-alerts" aria-selected="false" tabindex="-1" data-tab="alerts">Alerts <span class="count" id="alertCount">0</span></button>
+    </nav>
+  </div>
 </header>
 
-<main>
+<main id="main">
   <div id="authBanner"></div>
 
-  <section class="view active" id="view-zones"><div class="grid" id="zoneGrid"></div></section>
-
-  <section class="view" id="view-schedules">
-    <div class="sectitle">Active rules</div>
-    <div id="ruleList"></div>
-    <div class="sectitle">Add a rule</div>
-    <div class="form" id="ruleForm">
-      <div><label>Name</label><input id="f-name" placeholder="Weekday night setback"></div>
-      <div><label>Time (24h)</label><input id="f-time" type="time" value="19:00"></div>
-      <div class="full"><label>Days (leave empty for every day)</label>
-        <div class="days" id="f-days"></div></div>
-      <div><label>Apply to</label><select id="f-target"><option value="all">All zones</option></select></div>
-      <div><label>Mode</label><select id="f-mode">
-        <option>Heat</option><option>Cool</option><option>Auto</option><option>Off</option></select></div>
-      <div><label>Heat setpoint</label><input id="f-heat" type="number" value="62"></div>
-      <div><label>Cool setpoint</label><input id="f-cool" type="number" value="80"></div>
-      <div><label>Hold</label><select id="f-hold">
-        <option value="PermanentHold">Permanent hold</option>
-        <option value="TemporaryHold">Until next schedule change</option>
-        <option value="NoHold">Resume schedule</option></select></div>
-      <div class="full"><button class="btn primary" id="addRuleBtn">Add rule</button></div>
-    </div>
+  <section class="view active" id="view-zones" role="tabpanel" aria-labelledby="tab-zones" tabindex="0">
+    <div class="grid" id="zoneGrid"></div>
   </section>
 
-  <section class="view" id="view-automations">
+  <section class="view" id="view-automations" role="tabpanel" aria-labelledby="tab-automations" tabindex="0" hidden>
     <div class="stripe" id="autoStripe"></div>
 
-    <div class="autocard accent">
-      <h3>Generator load-shed</h3>
+    <div class="card-lg accent">
+      <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Generator load-shed</h3>
       <div class="desc">When your transfer switch reports it's on generator power, turn selected zones
         off and duty-cycle the rest so they share the generator instead of all running at once.
         When utility power returns, every zone is restored to how it was. This creates two paired rules.</div>
-      <div class="subgrid">
-        <div class="fld"><label>Generator status topic</label>
+      <div class="form-grid">
+        <div class="fld"><label for="g-topic">Generator status topic</label>
           <input id="g-topic" class="mono" value="facility/generator/status"></div>
-        <div class="fld"><label>JSON field (optional, e.g. power.source)</label>
+        <div class="fld"><label for="g-field">JSON field (optional, e.g. power.source)</label>
           <input id="g-field" class="mono" placeholder="leave blank for a plain payload"></div>
-        <div class="fld"><label>Payload when ON generator</label>
+        <div class="fld"><label for="g-on">Payload when ON generator</label>
           <input id="g-on" class="mono" value="on"></div>
-        <div class="fld"><label>Payload when back on utility</label>
+        <div class="fld"><label for="g-off">Payload when back on utility</label>
           <input id="g-off" class="mono" value="off"></div>
         <div class="fld full"><label>Turn these zones OFF (non-critical)</label>
           <div class="picker" id="g-shed"></div></div>
         <div class="fld full"><label>Rotate these zones (critical — keep some running)</label>
           <div class="picker" id="g-rotate"></div></div>
-        <div class="fld"><label>How many rotate at once</label>
+        <div class="fld"><label for="g-run">How many rotate at once</label>
           <input id="g-run" type="number" min="1" value="2"></div>
-        <div class="fld"><label>Rotate interval (minutes, min 5)</label>
+        <div class="fld"><label for="g-int">Rotate interval (minutes, min 5)</label>
           <input id="g-int" type="number" min="5" value="15"></div>
-        <div class="fld"><label>Heat setpoint while running</label>
+        <div class="fld"><label for="g-heat">Heat setpoint while running</label>
           <input id="g-heat" type="number" value="66"></div>
-        <div class="fld"><label>Cool setpoint while running</label>
+        <div class="fld"><label for="g-cool">Cool setpoint while running</label>
           <input id="g-cool" type="number" value="80"></div>
         <div class="fld full"><button class="btn warm" id="g-create">Create generator rules</button></div>
       </div>
@@ -289,37 +469,37 @@
     <div id="autoList"></div>
 
     <details class="adv">
-      <summary>Build a custom rule — react to any MQTT state</summary>
-      <div class="autocard">
+      <summary>Build a custom rule — react to any MQTT message</summary>
+      <div class="card-lg">
         <div class="desc">Watch any topic on your broker and run one or more actions when a message matches.
           Add actions one at a time, then create the rule.</div>
-        <div class="subgrid">
-          <div class="fld"><label>Rule name</label><input id="c-name" placeholder="High demand shed"></div>
-          <div class="fld"><label>Trigger topic</label><input id="c-topic" class="mono" placeholder="facility/power/load"></div>
-          <div class="fld"><label>Match</label><select id="c-mtype">
+        <div class="form-grid">
+          <div class="fld"><label for="c-name">Rule name</label><input id="c-name" placeholder="High demand shed"></div>
+          <div class="fld"><label for="c-topic">Trigger topic</label><input id="c-topic" class="mono" placeholder="facility/power/load"></div>
+          <div class="fld"><label for="c-mtype">Match</label><div class="field sel"><select id="c-mtype">
             <option value="equals">payload equals</option>
             <option value="not_equals">payload is not</option>
             <option value="contains">payload contains</option>
             <option value="regex">payload matches regex</option>
             <option value="gt">value greater than</option>
             <option value="lt">value less than</option>
-            <option value="any">any message</option></select></div>
-          <div class="fld"><label>Value</label><input id="c-mvalue" class="mono" placeholder="on / 85 / backup"></div>
-          <div class="fld"><label>JSON field (optional)</label><input id="c-field" class="mono" placeholder="power.source"></div>
-          <div class="fld"><label>Re-trigger</label><select id="c-retrig">
+            <option value="any">any message</option></select></div></div>
+          <div class="fld"><label for="c-mvalue">Value</label><input id="c-mvalue" class="mono" placeholder="on / 85 / backup"></div>
+          <div class="fld"><label for="c-field">JSON field (optional)</label><input id="c-field" class="mono" placeholder="power.source"></div>
+          <div class="fld"><label for="c-retrig">Re-trigger</label><div class="field sel"><select id="c-retrig">
             <option value="on_change">only when the state changes</option>
-            <option value="every_message">on every matching message</option></select></div>
+            <option value="every_message">on every matching message</option></select></div></div>
         </div>
 
         <div class="sectitle" style="margin-top:18px">Actions</div>
         <div id="c-actions"></div>
-        <div class="subgrid" style="margin-top:6px">
-          <div class="fld"><label>Action type</label><select id="a-type" onchange="renderActionFields()">
+        <div class="form-grid" style="margin-top:6px">
+          <div class="fld"><label for="a-type">Action type</label><div class="field sel"><select id="a-type" onchange="renderActionFields()">
             <option value="set">Set zones (mode / setpoints)</option>
             <option value="rotate">Rotate a group</option>
             <option value="snapshot">Snapshot zones (save state)</option>
             <option value="restore">Restore a snapshot</option>
-            <option value="stop_rotation">Stop a rotation</option></select></div>
+            <option value="stop_rotation">Stop a rotation</option></select></div></div>
           <div class="fld" id="a-dynamic-1"></div>
           <div class="fld full" id="a-dynamic-2"></div>
           <div class="fld full"><button class="btn" id="a-add">Add action</button></div>
@@ -329,36 +509,132 @@
     </details>
   </section>
 
-  <section class="view" id="view-alerts"><div id="alertList"></div></section>
+  <section class="view" id="view-schedules" role="tabpanel" aria-labelledby="tab-schedules" tabindex="0" hidden>
+    <div class="sectitle">Active rules</div>
+    <div id="ruleList"></div>
+    <div class="sectitle">Add a rule</div>
+    <div class="card-lg">
+      <div class="form-grid">
+        <div class="fld"><label for="f-name">Name</label><input id="f-name" placeholder="Weekday night setback"></div>
+        <div class="fld"><label for="f-time">Time (24h)</label><input id="f-time" type="time" value="19:00"></div>
+        <div class="fld full"><label>Days (leave empty for every day)</label>
+          <div class="days" id="f-days"></div></div>
+        <div class="fld"><label for="f-target">Apply to</label><div class="field sel"><select id="f-target"><option value="all">All zones</option></select></div></div>
+        <div class="fld"><label for="f-mode">Mode</label><div class="field sel"><select id="f-mode">
+          <option>Heat</option><option>Cool</option><option>Auto</option><option>Off</option></select></div></div>
+        <div class="fld"><label for="f-heat">Heat setpoint</label><input id="f-heat" type="number" value="62"></div>
+        <div class="fld"><label for="f-cool">Cool setpoint</label><input id="f-cool" type="number" value="80"></div>
+        <div class="fld"><label for="f-hold">Hold</label><div class="field sel"><select id="f-hold">
+          <option value="PermanentHold">Permanent hold</option>
+          <option value="TemporaryHold">Until next schedule change</option>
+          <option value="NoHold">Resume schedule</option></select></div></div>
+        <div class="fld full"><button class="btn primary" id="addRuleBtn">Add rule</button></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="view" id="view-alerts" role="tabpanel" aria-labelledby="tab-alerts" tabindex="0" hidden>
+    <div id="alertList"></div>
+  </section>
 </main>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<dialog id="confirmDlg" aria-labelledby="confirmTitle">
+  <div class="dlg-body">
+    <h3 id="confirmTitle">Are you sure?</h3>
+    <p id="confirmMsg"></p>
+  </div>
+  <div class="dlg-foot">
+    <button class="btn ghost" data-act="cancel">Cancel</button>
+    <button class="btn danger" data-act="ok" style="border:1px solid var(--crit)">Delete</button>
+  </div>
+</dialog>
 
 <script>
 const TOKEN = new URLSearchParams(location.search).get("token") || "";
 const HDRS = TOKEN ? {"X-Token":TOKEN} : {};
 const qp = TOKEN ? ("?token="+encodeURIComponent(TOKEN)) : "";
 
-const state = { devices:[], pending:{} };  // pending[id] = {mode,heat,cool,hold,dirty}
+const state = { devices:[], pending:{}, autoStatus:{}, loaded:false };
 
+/* ---------- inline icons ---------- */
+const IC = {
+  ok:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
+  err:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
+  critical:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+  warning:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+  info:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
+  droplet:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/></svg>',
+  thermo:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 14.76V5a2 2 0 0 0-4 0v9.76a4 4 0 1 0 4 0z"/></svg>',
+  plug:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>',
+  inbox:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>',
+  bolt:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
+  sun:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>',
+  moon:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>'
+};
+
+/* ---------- networking ---------- */
+let online=true;
+function setOnline(v){
+  if(v===online) return; online=v;
+  document.getElementById("connState").classList.toggle("show",!v);
+}
 async function api(path, opts={}){
   const o = Object.assign({headers:Object.assign({"Content-Type":"application/json"},HDRS)}, opts);
-  const r = await fetch(path+qp, o);
+  let r;
+  try{ r = await fetch(path+qp, o); }
+  catch(e){ setOnline(false); throw new Error("Network error — is the server reachable?"); }
+  setOnline(true);
   if(!r.ok){ let m; try{m=(await r.json()).detail||r.statusText}catch{m=r.statusText} throw new Error(m); }
   return r.status===204 ? null : r.json();
 }
 function toast(msg, err=false){
-  const t=document.getElementById("toast"); t.textContent=msg;
-  t.className="toast show"+(err?" err":""); setTimeout(()=>t.className="toast",2600);
+  const t=document.getElementById("toast");
+  t.innerHTML=`<span class="t-ic">${err?IC.err:IC.ok}</span><span>${esc(msg)}</span>`;
+  t.className="toast show "+(err?"err":"ok");
+  clearTimeout(toast._t); toast._t=setTimeout(()=>t.className="toast",3000);
+}
+/* Run an async action with a spinner on the triggering button. */
+async function withBusy(btn, fn){
+  if(!btn) return fn();
+  btn.setAttribute("aria-busy","true"); btn.disabled=true;
+  try{ return await fn(); }
+  finally{ btn.disabled=false; btn.removeAttribute("aria-busy"); }
 }
 function ago(ts){ if(!ts) return "never";
   const s=Math.floor(Date.now()/1000-ts);
   if(s<60) return s+"s ago"; if(s<3600) return Math.floor(s/60)+"m ago";
   return Math.floor(s/3600)+"h ago"; }
-// Escape any value that came from a thermostat name, an alert message, or a
-// rule/topic the operator typed, before it goes into innerHTML.
+/* Escape values that come from device names, alerts, or operator-typed rules/topics. */
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,
   c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+/* ---------- theme ---------- */
+function currentTheme(){ return document.documentElement.getAttribute("data-theme")||"dark"; }
+function paintThemeBtn(){ document.getElementById("themeBtn").innerHTML = currentTheme()==="dark"?IC.sun:IC.moon; }
+function toggleTheme(){
+  const t = currentTheme()==="dark"?"light":"dark";
+  document.documentElement.setAttribute("data-theme",t);
+  try{ localStorage.setItem("hw-theme",t); }catch(e){}
+  paintThemeBtn();
+}
+
+/* ---------- confirm dialog ---------- */
+function confirmDialog(msg, okLabel="Delete"){
+  const d=document.getElementById("confirmDlg");
+  if(!d || !d.showModal) return Promise.resolve(window.confirm(msg));
+  document.getElementById("confirmMsg").textContent=msg;
+  const okb=d.querySelector('[data-act="ok"]'); okb.textContent=okLabel;
+  return new Promise(res=>{
+    const done=v=>{ okb.onclick=null; d.querySelector('[data-act="cancel"]').onclick=null;
+      d.oncancel=null; try{d.close();}catch(e){} res(v); };
+    okb.onclick=()=>done(true);
+    d.querySelector('[data-act="cancel"]').onclick=()=>done(false);
+    d.oncancel=()=>done(false);
+    d.showModal();
+  });
+}
 
 /* ---------- status + header ---------- */
 async function refreshStatus(){
@@ -371,11 +647,11 @@ async function refreshStatus(){
     document.getElementById("pollText").textContent =
       "Polled "+ago(s.last_poll_ts)+(s.last_poll_error?" · error":"");
     document.getElementById("authBanner").innerHTML = s.authorized ? "" :
-      `<div class="banner"><div style="flex:1">
-         <div style="font-weight:600;margin-bottom:3px">Connect your Honeywell account</div>
-         <div style="color:var(--muted);font-size:13px">Authorize once to let the dashboard read and control your thermostats.</div>
+      `<div class="banner"><span class="b-ic">${IC.plug}</span><div style="flex:1">
+         <div class="b-title">Connect your Honeywell account</div>
+         <div class="b-sub">Authorize once to let the dashboard read and control your thermostats.</div>
        </div><a class="btn primary" href="/auth/login${qp}">Connect account</a></div>`;
-  }catch(e){ /* server may still be starting */ }
+  }catch(e){ /* connection indicator handles visibility */ }
 }
 
 /* ---------- zones ---------- */
@@ -391,31 +667,41 @@ function ensurePending(d){
   }
   return state.pending[d.deviceID];
 }
-function markDirty(id){ state.pending[id].dirty=true; renderZones(); }
-
-function step(id,key,delta){ const p=state.pending[id]; if(p[key]==null)p[key]=70;
-  p[key]=Math.round(p[key]+delta); p.dirty=true; renderZones(); }
+function clamp(v,lo,hi){ if(lo!=null&&v<lo)v=lo; if(hi!=null&&v>hi)v=hi; return v; }
+function step(id,key,delta){
+  const p=state.pending[id]; if(p[key]==null)p[key]=70;
+  const d=state.devices.find(x=>x.deviceID===id)||{};
+  const lo = key==="heat"?d.minHeatSetpoint:d.minCoolSetpoint;
+  const hi = key==="heat"?d.maxHeatSetpoint:d.maxCoolSetpoint;
+  p[key]=clamp(Math.round(p[key]+delta),lo,hi);
+  p.dirty=true; renderZones();
+}
 function setMode(id,m){ state.pending[id].mode=m; state.pending[id].dirty=true; renderZones(); }
 function setHold(id,v){ state.pending[id].hold=v; state.pending[id].dirty=true; }
 
-async function applyZone(id){
+async function applyZone(id,btn){
   const p=state.pending[id];
   const body={mode:p.mode,heatSetpoint:p.heat,coolSetpoint:p.cool,thermostatSetpointStatus:p.hold};
   try{
-    await api("/api/devices/"+id+"/set",{method:"POST",body:JSON.stringify(body)});
-    p.dirty=false; toast("Applied to "+(deviceName(id))); loadDevices();
+    await withBusy(btn,()=>api("/api/devices/"+id+"/set",{method:"POST",body:JSON.stringify(body)}));
+    p.dirty=false; toast("Applied to "+deviceName(id)); loadDevices();
   }catch(e){ toast("Couldn't apply: "+e.message,true); }
 }
 function resetZone(id){ delete state.pending[id]; renderZones(); }
 function deviceName(id){ const d=state.devices.find(x=>x.deviceID===id); return d?d.name:id; }
 
+function skeletonGrid(){
+  return Array.from({length:6}).map(()=>`<div class="skel" aria-hidden="true"></div>`).join("");
+}
 function renderZones(){
   const grid=document.getElementById("zoneGrid");
-  document.getElementById("zoneCount").textContent = state.devices.length||"";
+  document.getElementById("zoneCount").textContent = state.devices.length||"0";
+  if(!state.loaded){ grid.innerHTML=skeletonGrid(); return; }
   if(!state.devices.length){
     grid.innerHTML = `<div class="empty" style="grid-column:1/-1">
+      <div class="e-ic">${IC.thermo}</div>
       <div class="big">No thermostats yet</div>
-      Once the account is connected and the first poll runs, your zones appear here.</div>`;
+      <div class="lede">Once the account is connected and the first poll runs, your zones appear here.</div></div>`;
     return;
   }
   grid.innerHTML="";
@@ -426,41 +712,43 @@ function renderZones(){
     card.className="card "+modeClass(d)+(p.dirty?" dirty":"");
     const temp = d.indoorTemperature!=null?Math.round(d.indoorTemperature):"–";
     const unit = (d.units||"F").charAt(0);
-    const hum = d.indoorHumidity!=null?d.indoorHumidity+"% RH":"";
-    const out = d.outdoorTemperature!=null?("out "+Math.round(d.outdoorTemperature)+"°"):"";
+    const meta=[];
+    if(d.indoorHumidity!=null) meta.push(`<span class="m">${IC.droplet}${d.indoorHumidity}%</span>`);
+    if(d.outdoorTemperature!=null) meta.push(`<span class="m">${IC.thermo}${Math.round(d.outdoorTemperature)}° out</span>`);
+    if(d.scheduleStatus) meta.push(`<span class="m">${esc(d.scheduleStatus)}</span>`);
     card.innerHTML = `
       <div class="chead">
         <div><div class="cname">${esc(d.name)}</div><div class="cid">${esc(d.deviceID)}</div></div>
-        <div class="status"><span class="dot ${d.online?'on':'off'}"></span>${d.online?'online':'OFFLINE'}</div>
+        <span class="badge ${d.online?'':'off'}"><span class="dot ${d.online?'on':'off'}"></span>${d.online?'ONLINE':'OFFLINE'}</span>
       </div>
       <div class="readout">
-        <div class="temp">${temp}<span class="u">°${unit}</span></div>
-        <div class="meta">${hum}<br>${out}${d.scheduleStatus?'<br>'+d.scheduleStatus:''}</div>
+        <div class="temp">${temp}<span class="u">°${esc(unit)}</span></div>
+        <div class="meta">${meta.join("<br>")||"&nbsp;"}</div>
       </div>
-      <div class="modes">${modes.map(m=>
-        `<span class="chip ${p.mode===m?'sel':''}" data-mode="${m}" onclick="setMode('${d.deviceID}','${m}')">${m}</span>`).join("")}</div>
+      <div class="modes" role="group" aria-label="Mode for ${esc(d.name)}">${modes.map(m=>
+        `<button class="chip ${p.mode===m?'sel':''}" data-mode="${m}" aria-pressed="${p.mode===m}" onclick="setMode('${d.deviceID}','${m}')">${m}</button>`).join("")}</div>
       <div class="sp">
         <div class="spbox heat"><div class="lbl">Heat</div>
           <div class="stepper">
-            <button onclick="step('${d.deviceID}','heat',-1)">−</button>
+            <button aria-label="Lower heat setpoint" onclick="step('${d.deviceID}','heat',-1)">−</button>
             <span class="val">${p.heat!=null?p.heat:'–'}°</span>
-            <button onclick="step('${d.deviceID}','heat',1)">+</button></div></div>
+            <button aria-label="Raise heat setpoint" onclick="step('${d.deviceID}','heat',1)">+</button></div></div>
         <div class="spbox cool"><div class="lbl">Cool</div>
           <div class="stepper">
-            <button onclick="step('${d.deviceID}','cool',-1)">−</button>
+            <button aria-label="Lower cool setpoint" onclick="step('${d.deviceID}','cool',-1)">−</button>
             <span class="val">${p.cool!=null?p.cool:'–'}°</span>
-            <button onclick="step('${d.deviceID}','cool',1)">+</button></div></div>
+            <button aria-label="Raise cool setpoint" onclick="step('${d.deviceID}','cool',1)">+</button></div></div>
       </div>
-      <div class="row">
-        <select onchange="setHold('${d.deviceID}',this.value)">
+      <div class="field sel">
+        <select aria-label="Hold mode for ${esc(d.name)}" onchange="setHold('${d.deviceID}',this.value)">
           <option value="TemporaryHold" ${p.hold==='TemporaryHold'?'selected':''}>Hold until next schedule</option>
           <option value="PermanentHold" ${p.hold==='PermanentHold'?'selected':''}>Permanent hold</option>
           <option value="NoHold" ${p.hold==='NoHold'?'selected':''}>Resume schedule</option>
         </select>
       </div>
       <div class="apply">
-        <button class="btn ${modeClass(d)==='mode-heat'?'warm':'primary'}" onclick="applyZone('${d.deviceID}')">Apply changes</button>
-        ${p.dirty?`<button class="btn" onclick="resetZone('${d.deviceID}')">Reset</button>`:''}
+        <button class="btn ${modeClass(d)==='mode-heat'?'warm':'primary'}" onclick="applyZone('${d.deviceID}',this)">Apply changes</button>
+        ${p.dirty?`<button class="btn ghost" onclick="resetZone('${d.deviceID}')">Reset</button>`:''}
       </div>`;
     grid.appendChild(card);
   }
@@ -468,13 +756,11 @@ function renderZones(){
 
 async function loadDevices(){
   try{
-    const r=await api("/api/devices"); state.devices=r.devices||[];
+    const r=await api("/api/devices"); state.devices=r.devices||[]; state.loaded=true;
     renderZones(); populateTargets();
-    // Rebuild zone pickers only when the set of devices actually changes, so a
-    // poll doesn't wipe selections you're in the middle of making.
     const sig=state.devices.map(d=>d.deviceID).sort().join("|");
     if(sig!==state.pickerSig){ state.pickerSig=sig; populatePickers(); }
-  }catch(e){ /* not fatal */ }
+  }catch(e){ if(!state.loaded){ state.loaded=true; renderZones(); } }
 }
 
 /* ---------- schedules ---------- */
@@ -482,8 +768,9 @@ const DAYS=["mon","tue","wed","thu","fri","sat","sun"];
 let selDays=new Set();
 function renderDayPicker(){
   const c=document.getElementById("f-days"); c.innerHTML="";
-  DAYS.forEach(d=>{ const el=document.createElement("span");
+  DAYS.forEach(d=>{ const el=document.createElement("button"); el.type="button";
     el.className="d"+(selDays.has(d)?" on":""); el.textContent=d;
+    el.setAttribute("aria-pressed", selDays.has(d));
     el.onclick=()=>{ selDays.has(d)?selDays.delete(d):selDays.add(d); renderDayPicker(); };
     c.appendChild(el); });
 }
@@ -500,25 +787,26 @@ function fmtRule(r){
   return {when:`${esc(r.time)} · ${esc(days)}`,
     what:`<span class="rname">${esc(r.name||r.id)}</span> — ${esc(tgt)}: ${esc(a.mode||'')} `+
          `${a.heatSetpoint!=null?'H'+esc(a.heatSetpoint)+'°':''} ${a.coolSetpoint!=null?'C'+esc(a.coolSetpoint)+'°':''} `+
-         `<span class="hint">(${esc(a.thermostatSetpointStatus||'')})</span>`};
+         `<span style="color:var(--faint)">(${esc(a.thermostatSetpointStatus||'')})</span>`};
 }
 async function loadSchedules(){
   try{
     const r=await api("/api/schedules"); const rules=r.schedules||[];
-    document.getElementById("schedCount").textContent=rules.length||"";
+    document.getElementById("schedCount").textContent=rules.length||"0";
     const list=document.getElementById("ruleList");
-    if(!rules.length){ list.innerHTML=`<div class="empty"><div class="big">No schedule rules</div>
-      Add one below to move zones automatically — night setbacks, weekend modes, holiday setpoints.</div>`; return; }
+    if(!rules.length){ list.innerHTML=`<div class="empty"><div class="e-ic">${IC.inbox}</div>
+      <div class="big">No schedule rules</div>
+      <div class="lede">Add one below to move zones automatically — night setbacks, weekend modes, holiday setpoints.</div></div>`; return; }
     list.innerHTML="";
     for(const r of rules){ const f=fmtRule(r); const div=document.createElement("div");
       div.className="rule";
-      div.innerHTML=`<button class="toggle ${r.enabled?'on':''}" onclick="toggleRule('${r.id}',${!r.enabled})"></button>
+      div.innerHTML=`<button class="toggle ${r.enabled?'on':''}" role="switch" aria-checked="${!!r.enabled}" aria-label="Enable rule ${esc(r.name||r.id)}" onclick="toggleRule('${r.id}',${!r.enabled})"></button>
         <div class="when">${f.when}</div><div class="what">${f.what}</div>
-        <button class="btn" onclick="delRule('${r.id}')">Delete</button>`;
+        <button class="btn danger sm" onclick="delRule('${r.id}',this)" aria-label="Delete rule">Delete</button>`;
       list.appendChild(div); }
   }catch(e){}
 }
-async function addRule(){
+async function addRule(btn){
   const rule={ name:document.getElementById("f-name").value||"Rule",
     time:document.getElementById("f-time").value, days:[...selDays],
     targets:document.getElementById("f-target").value,
@@ -526,13 +814,16 @@ async function addRule(){
       heatSetpoint:Number(document.getElementById("f-heat").value),
       coolSetpoint:Number(document.getElementById("f-cool").value),
       thermostatSetpointStatus:document.getElementById("f-hold").value } };
-  try{ await api("/api/schedules",{method:"POST",body:JSON.stringify(rule)});
+  try{ await withBusy(btn,()=>api("/api/schedules",{method:"POST",body:JSON.stringify(rule)}));
     toast("Rule added"); document.getElementById("f-name").value=""; selDays.clear();
     renderDayPicker(); loadSchedules();
   }catch(e){ toast("Couldn't add rule: "+e.message,true); }
 }
-async function delRule(id){ try{ await api("/api/schedules/"+id,{method:"DELETE"}); loadSchedules(); }
-  catch(e){ toast(e.message,true); } }
+async function delRule(id,btn){
+  if(!await confirmDialog("Delete this schedule rule? This can't be undone.")) return;
+  try{ await withBusy(btn,()=>api("/api/schedules/"+id,{method:"DELETE"})); toast("Rule deleted"); loadSchedules(); }
+  catch(e){ toast(e.message,true); }
+}
 async function toggleRule(id,en){ try{
     await api("/api/schedules/"+id+"/enabled",{method:"POST",body:JSON.stringify({enabled:en})});
     loadSchedules(); }catch(e){ toast(e.message,true); } }
@@ -541,22 +832,21 @@ async function toggleRule(id,en){ try{
 async function loadAlerts(){
   try{
     const r=await api("/api/alerts"); const alerts=r.alerts||[];
-    document.getElementById("alertCount").textContent=alerts.length||"";
+    document.getElementById("alertCount").textContent=alerts.length||"0";
     const list=document.getElementById("alertList");
-    if(!alerts.length){ list.innerHTML=`<div class="empty"><div class="big">All clear</div>
-      Offline zones, temperature excursions, and failed commands will show up here.</div>`; return; }
+    if(!alerts.length){ list.innerHTML=`<div class="empty"><div class="e-ic">${IC.ok}</div>
+      <div class="big">All clear</div>
+      <div class="lede">Offline zones, temperature excursions, and failed commands will show up here.</div></div>`; return; }
     list.innerHTML="";
-    for(const a of alerts){ const div=document.createElement("div");
-      div.className="alert "+(a.severity||"info");
-      div.innerHTML=`<span class="sev">${esc(a.severity||"info")}</span>
+    for(const a of alerts){ const sev=a.severity||"info"; const div=document.createElement("div");
+      div.className="alert "+sev;
+      div.innerHTML=`<span class="a-ic">${IC[sev]||IC.info}</span>
         <span class="msg">${esc(a.message)}</span><span class="ts">${ago(a.ts)}</span>`;
       list.appendChild(div); }
   }catch(e){}
 }
 
 /* ---------- automations ---------- */
-state.autoStatus = {};
-
 function makePicker(id){
   const c=document.getElementById(id); if(!c) return;
   if(!state.devices.length){ c.className="picker empty";
@@ -565,7 +855,7 @@ function makePicker(id){
   c.innerHTML =
     `<label class="selall"><input type="checkbox" onchange="pickAll('${id}',this.checked)"> All zones</label>`+
     state.devices.map(d=>`<label class="opt"><input type="checkbox" value="${esc(d.deviceID)}"> `+
-      `${esc(d.name)}<span class="cid">${esc(d.deviceID)}</span></label>`).join("");
+      `<span>${esc(d.name)}</span><span class="cid">${esc(d.deviceID)}</span></label>`).join("");
 }
 function pickAll(id,on){ document.querySelectorAll(`#${id} .opt input`).forEach(cb=>cb.checked=on); }
 function readPicker(id){
@@ -578,12 +868,11 @@ function populatePickers(){ makePicker("g-shed"); makePicker("g-rotate");
 
 function tgtName(t){ return t==="all" ? "all zones"
   : Array.isArray(t) ? (t.length?t.map(deviceName).join(", "):"none") : deviceName(t); }
-
 function matchDesc(tr){
   const m=tr.match||{}; const subj=m.field?`<i>${esc(m.field)}</i>`:"payload";
   const map={equals:"is",not_equals:"is not",contains:"contains",regex:"matches",gt:">",lt:"<"};
-  if(m.type==="any") return `any message on ${esc(tr.topic)}`;
-  return `${subj} ${map[m.type]||esc(m.type)} <b>${esc(m.value)}</b>`;
+  if(m.type==="any") return `any message on <b>${esc(tr.topic)}</b>`;
+  return `<b>${esc(tr.topic)}</b>: ${subj} ${map[m.type]||esc(m.type)} <b>${esc(m.value)}</b>`;
 }
 function actionDesc(a){
   if(a.type==="set") return `Set ${esc(tgtName(a.targets))} → ${esc(valShort(a.values))}`;
@@ -601,11 +890,10 @@ async function loadAutomations(){
   try{
     const r=await api("/api/automations");
     const rules=r.automations||[]; state.autoStatus=r.status||{};
-    document.getElementById("autoCount").textContent=rules.length||"";
+    document.getElementById("autoCount").textContent=rules.length||"0";
 
-    // status stripe
     const strip=document.getElementById("autoStripe"); const bits=[];
-    if(!r.mqtt_enabled) bits.push(`<div class="stat">MQTT disabled — triggers won't fire. Use <b>Run now</b> to test, and set <b>MQTT_ENABLED=true</b> to go live.</div>`);
+    if(!r.mqtt_enabled) bits.push(`<div class="stat warnbox">MQTT disabled — triggers won't fire. Use <b>Run now</b> to test, and set <b>MQTT_ENABLED=true</b> to go live.</div>`);
     else bits.push(`<div class="stat"><span class="dot ${r.mqtt_connected?'on':'off'}"></span>MQTT ${r.mqtt_connected?'connected':'not connected'}</div>`);
     (state.autoStatus.rotations||[]).forEach(rot=>{
       const names=rot.running.map(deviceName).map(esc).join(", ")||"none";
@@ -615,20 +903,20 @@ async function loadAutomations(){
       bits.push(`<div class="stat">saved “<b>${esc(n)}</b>” · ${ids.length} zone(s)</div>`));
     strip.innerHTML=bits.join("");
 
-    // rule list
     const list=document.getElementById("autoList");
-    if(!rules.length){ list.innerHTML=`<div class="empty"><div class="big">No automations yet</div>
-      Set up the generator load-shed above, or build a custom rule.</div>`; return; }
+    if(!rules.length){ list.innerHTML=`<div class="empty"><div class="e-ic">${IC.bolt}</div>
+      <div class="big">No automations yet</div>
+      <div class="lede">Set up the generator load-shed above, or build a custom rule.</div></div>`; return; }
     list.innerHTML="";
     for(const rule of rules){ const div=document.createElement("div");
       div.className="auto-item"+(rule.enabled?"":" disabled");
       div.innerHTML=`
         <div class="auto-head">
-          <button class="toggle ${rule.enabled?'on':''}" onclick="toggleAuto('${rule.id}',${!rule.enabled})"></button>
+          <button class="toggle ${rule.enabled?'on':''}" role="switch" aria-checked="${!!rule.enabled}" aria-label="Enable ${esc(rule.name||rule.id)}" onclick="toggleAuto('${rule.id}',${!rule.enabled})"></button>
           <span class="aname">${esc(rule.name||rule.id)}</span>
           <span class="flexspace">
-            <button class="btn" onclick="runAuto('${rule.id}')">Run now</button>
-            <button class="btn" onclick="delAuto('${rule.id}')">Delete</button>
+            <button class="btn sm" onclick="runAuto('${rule.id}',this)">Run now</button>
+            <button class="btn danger sm" onclick="delAuto('${rule.id}',this)" aria-label="Delete automation">Delete</button>
           </span>
         </div>
         <div class="auto-trigger">when ${matchDesc(rule.trigger||{})}</div>
@@ -636,19 +924,22 @@ async function loadAutomations(){
       list.appendChild(div); }
   }catch(e){}
 }
-
 async function toggleAuto(id,en){ try{
   await api("/api/automations/"+id+"/enabled",{method:"POST",body:JSON.stringify({enabled:en})});
   loadAutomations(); }catch(e){ toast(e.message,true); } }
-async function delAuto(id){ try{ await api("/api/automations/"+id,{method:"DELETE"}); loadAutomations(); }
-  catch(e){ toast(e.message,true); } }
-async function runAuto(id){ try{ await api("/api/automations/"+id+"/run",{method:"POST"});
+async function delAuto(id,btn){
+  if(!await confirmDialog("Delete this automation? This can't be undone.")) return;
+  try{ await withBusy(btn,()=>api("/api/automations/"+id,{method:"DELETE"})); toast("Automation deleted"); loadAutomations(); }
+  catch(e){ toast(e.message,true); }
+}
+async function runAuto(id,btn){ try{
+  await withBusy(btn,()=>api("/api/automations/"+id+"/run",{method:"POST"}));
   toast("Ran automation"); setTimeout(loadDevices,1200); setTimeout(loadAutomations,1200);
   }catch(e){ toast("Couldn't run: "+e.message,true); } }
 
 async function postRule(rule){ return api("/api/automations",{method:"POST",body:JSON.stringify(rule)}); }
 
-async function createGeneratorRules(){
+async function createGeneratorRules(btn){
   const topic=document.getElementById("g-topic").value.trim();
   const field=document.getElementById("g-field").value.trim()||null;
   const onVal=document.getElementById("g-on").value.trim();
@@ -677,10 +968,12 @@ async function createGeneratorRules(){
 
   const mkMatch=v=>({type:"equals",value:v,field:field,ignore_case:true});
   try{
-    await postRule({name:"Generator: shed & rotate",enabled:true,
-      trigger:{topic,match:mkMatch(onVal),retrigger:"on_change"},actions:onActions});
-    await postRule({name:"Generator: restore on utility",enabled:true,
-      trigger:{topic,match:mkMatch(offVal),retrigger:"on_change"},actions:offActions});
+    await withBusy(btn, async()=>{
+      await postRule({name:"Generator: shed & rotate",enabled:true,
+        trigger:{topic,match:mkMatch(onVal),retrigger:"on_change"},actions:onActions});
+      await postRule({name:"Generator: restore on utility",enabled:true,
+        trigger:{topic,match:mkMatch(offVal),retrigger:"on_change"},actions:offActions});
+    });
     toast("Generator rules created"); loadAutomations();
   }catch(e){ toast("Couldn't create: "+e.message,true); }
 }
@@ -694,19 +987,19 @@ function renderActionFields(){
   const picker=id=>`<label>Zones</label><div class="picker" id="${id}"></div>`;
   if(t==="set"){
     d2.innerHTML=picker("a-set-tgt")+
-      `<div class="subgrid" style="margin-top:10px">
-        <div class="fld"><label>Mode</label><select id="a-mode">
-          <option value="">— leave —</option><option>Heat</option><option>Cool</option><option>Auto</option><option>Off</option></select></div>
-        <div class="fld"><label>Hold</label><select id="a-hold">
+      `<div class="form-grid" style="margin-top:12px">
+        <div class="fld"><label>Mode</label><div class="field sel"><select id="a-mode">
+          <option value="">— leave —</option><option>Heat</option><option>Cool</option><option>Auto</option><option>Off</option></select></div></div>
+        <div class="fld"><label>Hold</label><div class="field sel"><select id="a-hold">
           <option value="">— leave —</option><option value="TemporaryHold">Until next schedule</option>
-          <option value="PermanentHold">Permanent</option><option value="NoHold">Resume schedule</option></select></div>
+          <option value="PermanentHold">Permanent</option><option value="NoHold">Resume schedule</option></select></div></div>
         <div class="fld"><label>Heat setpoint</label><input id="a-heat" type="number" placeholder="—"></div>
         <div class="fld"><label>Cool setpoint</label><input id="a-cool" type="number" placeholder="—"></div>
       </div>`;
     makePicker("a-set-tgt");
   } else if(t==="rotate"){
     d2.innerHTML=picker("a-rot-tgt")+
-      `<div class="subgrid" style="margin-top:10px">
+      `<div class="form-grid" style="margin-top:12px">
         <div class="fld"><label>Rotation id</label><input id="a-rid" class="mono" value="group-a"></div>
         <div class="fld"><label>Run at once</label><input id="a-run" type="number" min="1" value="2"></div>
         <div class="fld"><label>Interval (min, ≥5)</label><input id="a-int" type="number" min="5" value="15"></div>
@@ -749,10 +1042,10 @@ function renderDraftActions(){
   const c=document.getElementById("c-actions");
   c.innerHTML=draftActions.map((a,i)=>`<div class="actrow"><span class="tag">${esc(a.type)}</span>`+
     `<span class="body">${actionDesc(a)}</span>`+
-    `<button class="x" onclick="draftActions.splice(${i},1);renderDraftActions()">×</button></div>`).join("")
-    || `<div class="hint" style="margin-bottom:8px">No actions yet — add one below.</div>`;
+    `<button class="x" aria-label="Remove action" onclick="draftActions.splice(${i},1);renderDraftActions()">✕</button></div>`).join("")
+    || `<div style="color:var(--faint);font-size:12.5px;margin-bottom:8px">No actions yet — add one below.</div>`;
 }
-async function createCustomRule(){
+async function createCustomRule(btn){
   const topic=document.getElementById("c-topic").value.trim();
   const mtype=document.getElementById("c-mtype").value;
   if(!topic){ toast("Enter a trigger topic",true); return; }
@@ -762,31 +1055,49 @@ async function createCustomRule(){
   const field=document.getElementById("c-field").value.trim(); if(field)match.field=field;
   const rule={ name:document.getElementById("c-name").value.trim()||"Custom rule", enabled:true,
     trigger:{topic,match,retrigger:document.getElementById("c-retrig").value}, actions:draftActions };
-  try{ await postRule(rule); toast("Automation created");
+  try{ await withBusy(btn,()=>postRule(rule)); toast("Automation created");
     draftActions=[]; renderDraftActions(); document.getElementById("c-name").value="";
     loadAutomations();
   }catch(e){ toast("Couldn't create: "+e.message,true); }
 }
 
-/* ---------- tabs, wiring, polling ---------- */
-document.querySelectorAll("nav.tabs button").forEach(b=>b.onclick=()=>{
-  document.querySelectorAll("nav.tabs button").forEach(x=>x.classList.remove("active"));
-  document.querySelectorAll(".view").forEach(v=>v.classList.remove("active"));
-  b.classList.add("active");
-  document.getElementById("view-"+b.dataset.tab).classList.add("active");
+/* ---------- tabs (ARIA + keyboard) ---------- */
+const tabBtns=[...document.querySelectorAll('nav.tabs [role="tab"]')];
+function selectTab(btn){
+  tabBtns.forEach(t=>{ const sel=t===btn;
+    t.classList.toggle("active",sel); t.setAttribute("aria-selected",sel); t.tabIndex=sel?0:-1; });
+  document.querySelectorAll(".view").forEach(v=>{ const on=v.id==="view-"+btn.dataset.tab;
+    v.classList.toggle("active",on); v.hidden=!on; });
+}
+tabBtns.forEach((btn,i)=>{
+  btn.addEventListener("click",()=>selectTab(btn));
+  btn.addEventListener("keydown",e=>{
+    let n; if(e.key==="ArrowRight")n=tabBtns[(i+1)%tabBtns.length];
+    else if(e.key==="ArrowLeft")n=tabBtns[(i-1+tabBtns.length)%tabBtns.length];
+    else if(e.key==="Home")n=tabBtns[0]; else if(e.key==="End")n=tabBtns[tabBtns.length-1];
+    if(n){ e.preventDefault(); n.focus(); selectTab(n); }
+  });
 });
-document.getElementById("refreshBtn").onclick=async()=>{
-  try{ await api("/api/refresh",{method:"POST"}); toast("Refreshing from Honeywell…");
-    setTimeout(()=>{refreshStatus();loadDevices();},1500);
-  }catch(e){ toast(e.message,true); } };
-document.getElementById("addRuleBtn").onclick=addRule;
-document.getElementById("g-create").onclick=createGeneratorRules;
+
+/* ---------- wiring ---------- */
+document.getElementById("themeBtn").onclick=toggleTheme;
+document.getElementById("refreshBtn").onclick=function(){
+  const btn=this;
+  withBusy(btn,async()=>{ await api("/api/refresh",{method:"POST"}); })
+    .then(()=>{ toast("Refreshing from Honeywell…"); setTimeout(()=>{refreshStatus();loadDevices();},1500); })
+    .catch(e=>toast(e.message,true));
+};
+document.getElementById("addRuleBtn").onclick=function(){ addRule(this); };
+document.getElementById("g-create").onclick=function(){ createGeneratorRules(this); };
 document.getElementById("a-add").onclick=addDraftAction;
-document.getElementById("c-create").onclick=createCustomRule;
+document.getElementById("c-create").onclick=function(){ createCustomRule(this); };
 
 function tick(){ document.getElementById("clock").textContent=
   new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); }
 
+/* ---------- boot ---------- */
+paintThemeBtn();
+renderZones();            // shows skeleton until first load
 renderDayPicker(); renderActionFields(); renderDraftActions();
 tick(); setInterval(tick,1000);
 refreshStatus(); loadDevices(); loadSchedules(); loadAlerts(); loadAutomations();
