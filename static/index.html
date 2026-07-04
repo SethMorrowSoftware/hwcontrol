@@ -569,9 +569,10 @@
     <div class="sectitle">Thermostat onboard schedules</div>
     <div class="card-lg">
       <div class="desc">Make this app the single source of truth: disable a thermostat's
-        <em>own</em> onboard schedule so nothing but this app's programs and holds drive it.
-        The original is backed up first and can be restored anytime. This writes to the
-        physical thermostat, so it's done per device (T-series/LCC units).</div>
+        <em>own</em> onboard schedule (sets its schedule type to <b>None</b>) so nothing but
+        this app's programs and holds drive it. <b>Restore</b> switches the type back — but
+        Resideo doesn't expose the saved day/time periods, so if you ever revert you may need
+        to re-enter them in the Resideo app. Writes to the physical thermostat; T-series/LCC units.</div>
       <div id="onboardList"></div>
     </div>
   </section>
@@ -964,7 +965,7 @@ async function loadOnboard(){
   }catch(e){}
 }
 async function disableOnboard(id,btn){
-  if(!await confirmDialog("Disable this thermostat's onboard schedule? This app will drive it from now on. The original schedule is backed up so you can restore it anytime.","Take over")) return;
+  if(!await confirmDialog("Disable this thermostat's onboard schedule? This sets its schedule type to None so only this app drives it. You can re-enable the type later, but Resideo won't let us restore the exact day/time periods — you'd re-enter those in the Resideo app.","Take over")) return;
   try{ await withBusy(btn,()=>api("/api/devices/"+id+"/onboard_schedule/disable",{method:"POST"}));
     toast("Onboard schedule disabled — app in control"); loadOnboard();
   }catch(e){ toast("Couldn't take over: "+e.message,true); }

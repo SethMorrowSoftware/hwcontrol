@@ -20,6 +20,7 @@ def _normalize(raw: dict) -> dict:
     """Pull the fields we care about out of a raw thermostat object into a flat,
     stable shape the dashboard and MQTT layer can rely on."""
     cv = raw.get("changeableValues", {}) or {}
+    st_api, st_short, st_sub = _schedule_type_info(raw)
     return {
         "deviceID": raw.get("deviceID"),
         "name": raw.get("userDefinedDeviceName") or raw.get("name") or raw.get("deviceID"),
@@ -40,35 +41,38 @@ def _normalize(raw: dict) -> dict:
         "minCoolSetpoint": raw.get("minCoolSetpoint"),
         "maxCoolSetpoint": raw.get("maxCoolSetpoint"),
         "scheduleStatus": raw.get("scheduleStatus"),
-        # Onboard-schedule type (e.g. "TimedNorthAmerica"); the /devices/schedule
-        # endpoint requires it as the `type` query param. Shape varies by firmware,
-        # so read it defensively.
-        "scheduleType": _schedule_type(raw),
+        # Onboard-schedule identity, used to disable/restore a device's own schedule:
+        #   scheduleType      - API name for the `type` query param ("TimedNorthAmerica")
+        #   scheduleTypeShort - short name used in the request body ("Timed")
+        #   scheduleSubType   - e.g. "NA"
+        "scheduleType": st_api,
+        "scheduleTypeShort": st_short,
+        "scheduleSubType": st_sub,
         "changeableValues": cv,  # kept so control calls can merge cleanly
     }
 
 
-def _schedule_type(raw: dict) -> Optional[str]:
-    """The schedule type to pass to the /devices/schedule endpoint.
+def _schedule_type_info(raw: dict):
+    """Return (api_name, short_name, sub_type) for a device's onboard schedule.
 
-    A device reports scheduleType.scheduleType as a short name ("Timed"), but the
-    endpoint's `type` param wants the matching entry from availableScheduleTypes
-    ("TimedNorthAmerica"). Map the short name onto the capability list; fall back
-    to the short name if there's no list to match against."""
+    Devices report scheduleType.scheduleType as a short name ("Timed"), but the
+    /devices/schedule endpoint's `type` query param wants the matching entry from
+    availableScheduleTypes ("TimedNorthAmerica"). Returns (None, None, None) when
+    the device doesn't report a schedule type."""
     st = raw.get("scheduleType")
-    cur = st.get("scheduleType") if isinstance(st, dict) else st
-    if not isinstance(cur, str) or not cur:
-        return None
-    caps = (raw.get("scheduleCapabilities") or {}).get("availableScheduleTypes") or []
-    caps = [c for c in caps if isinstance(c, str)]
-    low = cur.lower()
-    for c in caps:                       # exact match wins
-        if c.lower() == low:
-            return c
-    for c in caps:                       # else the capability that includes it
-        if c.lower().startswith(low) or low in c.lower():
-            return c
-    return cur
+    if isinstance(st, dict):
+        short, sub = st.get("scheduleType"), st.get("scheduleSubType")
+    else:
+        short, sub = st, None
+    if not isinstance(short, str) or not short:
+        return (None, None, None)
+    caps = [c for c in ((raw.get("scheduleCapabilities") or {}).get("availableScheduleTypes") or [])
+            if isinstance(c, str)]
+    low = short.lower()
+    api = next((c for c in caps if c.lower() == low), None)
+    if api is None:
+        api = next((c for c in caps if c.lower().startswith(low) or low in c.lower()), None)
+    return (api or short, short, sub)
 
 
 # Fields whose changes are worth announcing as events.
