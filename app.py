@@ -411,6 +411,34 @@ def api_onboard_status():
     return {"taken_over": list(_load_onboard_backup().keys())}
 
 
+@app.get("/api/devices/{device_id}/raw")
+def api_device_raw(device_id: str):
+    """Read-only diagnostic: the raw Resideo thermostat object, plus the result of
+    probing the onboard-schedule endpoint. Use it to inspect the real schedule
+    shape/type for a device when wiring up onboard-schedule takeover."""
+    if not client.is_authorized:
+        raise HTTPException(401, "Account not authorized. Connect it first.")
+    loc = store.location_of(device_id)
+    if loc is None:
+        raise HTTPException(404, f"Unknown device {device_id}")
+    out: dict[str, Any] = {"locationId": loc}
+    try:
+        out["device"] = client.get_thermostat(device_id, loc)
+    except HoneywellError as exc:
+        out["device_error"] = str(exc)
+    cached = store.get(device_id)
+    stype = cached.get("scheduleType") if cached else None
+    out["detected_scheduleType"] = stype
+    # Probe the schedule endpoint both with and without the type param so we can
+    # see which the backend accepts.
+    for label, kwargs in (("with_type", {"schedule_type": stype}), ("no_type", {})):
+        try:
+            out[f"schedule_{label}"] = client.get_schedule(device_id, loc, **kwargs)
+        except HoneywellError as exc:
+            out[f"schedule_{label}_error"] = str(exc)
+    return out
+
+
 @app.post("/api/devices/{device_id}/onboard_schedule/disable")
 def api_disable_onboard(device_id: str):
     """Disable a thermostat's onboard schedule (cancel all periods) so this app's
