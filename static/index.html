@@ -25,6 +25,7 @@
     --heat:#f2994a; --cool:#4aa8f2; --auto:#a78bfa;
   }
   :root[data-theme="dark"]{
+    color-scheme:dark;
     --bg:#0d1218; --inset:#0a0e13;
     --surface:#151c25; --surface-2:#1b2531; --surface-3:#222e3b;
     --border:#28323f; --border-strong:#3a4756;
@@ -41,6 +42,7 @@
     --scrim:rgba(4,7,10,.6);
   }
   :root[data-theme="light"]{
+    color-scheme:light;
     --bg:#eef1f5; --inset:#e6ebf1;
     --surface:#ffffff; --surface-2:#f3f6f9; --surface-3:#e9eef4;
     --border:#dce3ea; --border-strong:#c4cfdb;
@@ -243,6 +245,13 @@
     border:1px solid var(--border);color:var(--text);padding:9px 11px;border-radius:var(--r-sm);font-size:13px}
   .fld input:focus-visible,.form-grid input:focus-visible{border-color:var(--accent)}
   .fld input.mono,.form-grid input.mono{font-family:var(--mono)}
+  /* base styling for any text-like input (covers builder rows outside .fld) */
+  input[type=text],input[type=number],input[type=time],input[type=search],input:not([type]){
+    background:var(--inset);border:1px solid var(--border);color:var(--text);
+    padding:9px 11px;border-radius:var(--r-sm);font-size:13px;font-family:var(--sans)}
+  input[type=text]:focus-visible,input[type=number]:focus-visible,
+  input[type=time]:focus-visible,input:not([type]):focus-visible{border-color:var(--accent)}
+  input.mono{font-family:var(--mono)}
   input::placeholder{color:var(--faint)}
 
   .days{display:flex;gap:6px;flex-wrap:wrap}
@@ -364,6 +373,24 @@
   .dlg-body p{color:var(--muted);font-size:13.5px;margin:0}
   .dlg-foot{display:flex;justify-content:flex-end;gap:10px;padding:16px 22px 20px}
 
+  /* ============================ builder rows (programs & conditions) ==== */
+  .brow{display:flex;flex-wrap:wrap;gap:10px 12px;align-items:flex-end;background:var(--inset);
+    border:1px solid var(--border);border-radius:var(--r-sm);padding:12px;margin-bottom:10px}
+  .brow .f{flex:1 1 110px;min-width:0}
+  .brow .f.grow{flex:2 1 190px}
+  .brow .mini{font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);
+    display:block;margin-bottom:5px;font-weight:600}
+  .brow .rm{flex:0 0 auto;align-self:flex-end;height:38px}
+  .brow input:disabled{opacity:.45}
+  .preset-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:2px 0 14px}
+  .preset-row .lbl{font-size:12px;color:var(--muted);margin-right:2px}
+  .periods-empty,.conds-empty{color:var(--faint);font-size:12.5px;padding:14px;
+    border:1px dashed var(--border);border-radius:var(--r-sm);text-align:center;margin-bottom:12px}
+  .prog-periods{margin-top:10px;display:flex;flex-wrap:wrap;gap:6px}
+  .prog-periods .pp{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:var(--r-pill);
+    background:var(--inset);border:1px solid var(--border);font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+  .prog-periods .pp b{color:var(--accent);font-weight:600}
+
   /* ============================ responsive ============================ */
   @media(max-width:720px){
     .bar{flex-wrap:wrap;gap:10px 14px;padding:12px 16px}
@@ -471,27 +498,23 @@
     <details class="adv">
       <summary>Build a custom rule — react to any MQTT message</summary>
       <div class="card-lg">
-        <div class="desc">Watch any topic on your broker and run one or more actions when a message matches.
-          Add actions one at a time, then create the rule.</div>
+        <div class="desc">Watch one or more topics on your broker and run actions when the
+          conditions match. Combine conditions with AND (all) or OR (any).</div>
         <div class="form-grid">
           <div class="fld"><label for="c-name">Rule name</label><input id="c-name" placeholder="High demand shed"></div>
-          <div class="fld"><label for="c-topic">Trigger topic</label><input id="c-topic" class="mono" placeholder="facility/power/load"></div>
-          <div class="fld"><label for="c-mtype">Match</label><div class="field sel"><select id="c-mtype">
-            <option value="equals">payload equals</option>
-            <option value="not_equals">payload is not</option>
-            <option value="contains">payload contains</option>
-            <option value="regex">payload matches regex</option>
-            <option value="gt">value greater than</option>
-            <option value="lt">value less than</option>
-            <option value="any">any message</option></select></div></div>
-          <div class="fld"><label for="c-mvalue">Value</label><input id="c-mvalue" class="mono" placeholder="on / 85 / backup"></div>
-          <div class="fld"><label for="c-field">JSON field (optional)</label><input id="c-field" class="mono" placeholder="power.source"></div>
+          <div class="fld"><label for="c-mode">Fire when</label><div class="field sel"><select id="c-mode">
+            <option value="all">ALL conditions match (AND)</option>
+            <option value="any">ANY condition matches (OR)</option></select></div></div>
           <div class="fld"><label for="c-retrig">Re-trigger</label><div class="field sel"><select id="c-retrig">
-            <option value="on_change">only when the state changes</option>
+            <option value="on_change">only when the result changes</option>
             <option value="every_message">on every matching message</option></select></div></div>
         </div>
 
-        <div class="sectitle" style="margin-top:18px">Actions</div>
+        <div class="sectitle" style="margin-top:18px">Conditions</div>
+        <div id="c-conditions"></div>
+        <div class="preset-row"><button class="btn sm" id="c-add-cond">+ Add condition</button></div>
+
+        <div class="sectitle" style="margin-top:6px">Actions</div>
         <div id="c-actions"></div>
         <div class="form-grid" style="margin-top:6px">
           <div class="fld"><label for="a-type">Action type</label><div class="field sel"><select id="a-type" onchange="renderActionFields()">
@@ -504,31 +527,42 @@
           <div class="fld full" id="a-dynamic-2"></div>
           <div class="fld full"><button class="btn" id="a-add">Add action</button></div>
         </div>
-        <div class="fld full"><button class="btn primary" id="c-create">Create automation</button></div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:4px">
+          <button class="btn primary" id="c-create">Create automation</button>
+          <button class="btn ghost" id="c-cancel" hidden>Cancel edit</button>
+        </div>
       </div>
     </details>
   </section>
 
   <section class="view" id="view-schedules" role="tabpanel" aria-labelledby="tab-schedules" tabindex="0" hidden>
-    <div class="sectitle">Active rules</div>
+    <div class="sectitle">Programs</div>
     <div id="ruleList"></div>
-    <div class="sectitle">Add a rule</div>
+
+    <div class="sectitle" id="progFormTitle">New program</div>
     <div class="card-lg">
+      <div class="desc">A program applies to one target on the days you pick. Add as many
+        timed periods as you like — a "Turn ON" or temperature change in the morning, a
+        "Turn OFF" at night, setbacks midday, and so on.</div>
       <div class="form-grid">
-        <div class="fld"><label for="f-name">Name</label><input id="f-name" placeholder="Weekday night setback"></div>
-        <div class="fld"><label for="f-time">Time (24h)</label><input id="f-time" type="time" value="19:00"></div>
+        <div class="fld"><label for="p-name">Program name</label><input id="p-name" placeholder="Warehouse daily program"></div>
+        <div class="fld"><label for="p-target">Apply to</label><div class="field sel"><select id="p-target"><option value="all">All zones</option></select></div></div>
         <div class="fld full"><label>Days (leave empty for every day)</label>
-          <div class="days" id="f-days"></div></div>
-        <div class="fld"><label for="f-target">Apply to</label><div class="field sel"><select id="f-target"><option value="all">All zones</option></select></div></div>
-        <div class="fld"><label for="f-mode">Mode</label><div class="field sel"><select id="f-mode">
-          <option>Heat</option><option>Cool</option><option>Auto</option><option>Off</option></select></div></div>
-        <div class="fld"><label for="f-heat">Heat setpoint</label><input id="f-heat" type="number" value="62"></div>
-        <div class="fld"><label for="f-cool">Cool setpoint</label><input id="f-cool" type="number" value="80"></div>
-        <div class="fld"><label for="f-hold">Hold</label><div class="field sel"><select id="f-hold">
-          <option value="PermanentHold">Permanent hold</option>
-          <option value="TemporaryHold">Until next schedule change</option>
-          <option value="NoHold">Resume schedule</option></select></div></div>
-        <div class="fld full"><button class="btn primary" id="addRuleBtn">Add rule</button></div>
+          <div class="days" id="p-days"></div></div>
+      </div>
+
+      <div class="sectitle" style="margin-top:18px">Periods</div>
+      <div id="p-periods"></div>
+      <div class="preset-row">
+        <span class="lbl">Add a period:</span>
+        <button class="btn sm" id="p-add-on">+ Turn ON</button>
+        <button class="btn sm" id="p-add-temp">+ Set temperature</button>
+        <button class="btn sm" id="p-add-off">+ Turn OFF</button>
+      </div>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn primary" id="p-save">Create program</button>
+        <button class="btn ghost" id="p-cancel" hidden>Cancel edit</button>
       </div>
     </div>
   </section>
@@ -763,11 +797,14 @@ async function loadDevices(){
   }catch(e){ if(!state.loaded){ state.loaded=true; renderZones(); } }
 }
 
-/* ---------- schedules ---------- */
+/* ---------- schedules (daily programs) ---------- */
 const DAYS=["mon","tue","wed","thu","fri","sat","sun"];
 let selDays=new Set();
+let progPeriods=[];        // [{time,mode,heat,cool,hold}]
+let editingProgram=null;   // rule id while editing
+
 function renderDayPicker(){
-  const c=document.getElementById("f-days"); c.innerHTML="";
+  const c=document.getElementById("p-days"); if(!c) return; c.innerHTML="";
   DAYS.forEach(d=>{ const el=document.createElement("button"); el.type="button";
     el.className="d"+(selDays.has(d)?" on":""); el.textContent=d;
     el.setAttribute("aria-pressed", selDays.has(d));
@@ -775,54 +812,127 @@ function renderDayPicker(){
     c.appendChild(el); });
 }
 function populateTargets(){
-  const sel=document.getElementById("f-target"); const cur=sel.value;
+  const sel=document.getElementById("p-target"); if(!sel) return; const cur=sel.value;
   sel.innerHTML='<option value="all">All zones</option>'+
     state.devices.map(d=>`<option value="${esc(d.deviceID)}">${esc(d.name)}</option>`).join("");
-  sel.value=cur;
+  sel.value=cur||"all";
 }
-function fmtRule(r){
+function periodAction(p){
+  const a={}; if(p.mode) a.mode=p.mode;
+  if(p.mode!=="Off"){
+    if(p.heat!==""&&p.heat!=null) a.heatSetpoint=Number(p.heat);
+    if(p.cool!==""&&p.cool!=null) a.coolSetpoint=Number(p.cool);
+  }
+  if(p.hold) a.thermostatSetpointStatus=p.hold;
+  return a;
+}
+function actionSummary(a){ const b=[]; if(a.mode)b.push(a.mode);
+  if(a.heatSetpoint!=null)b.push("H"+a.heatSetpoint+"°"); if(a.coolSetpoint!=null)b.push("C"+a.coolSetpoint+"°");
+  return b.join(" ")||"set"; }
+
+function updPeriod(i,k,v){ progPeriods[i][k]=v; if(k==="mode") renderPeriods(); }
+function addPeriod(kind){
+  const P={ on:{time:"06:00",mode:"Heat",heat:70,cool:76,hold:"PermanentHold"},
+            temp:{time:"12:00",mode:"",heat:70,cool:76,hold:"PermanentHold"},
+            off:{time:"22:00",mode:"Off",heat:"",cool:"",hold:""} }[kind];
+  progPeriods.push(Object.assign({},P)); renderPeriods();
+}
+function rmPeriod(i){ progPeriods.splice(i,1); renderPeriods(); }
+function renderPeriods(){
+  const c=document.getElementById("p-periods"); if(!c) return;
+  if(!progPeriods.length){ c.innerHTML=`<div class="periods-empty">No periods yet — add one below (Turn ON / Set temperature / Turn OFF).</div>`; return; }
+  const modeOpts=s=>["","Heat","Cool","Auto","Off"].map(m=>`<option value="${m}" ${s===m?'selected':''}>${m||'— leave mode —'}</option>`).join("");
+  const holdOpts=s=>[["","— leave hold —"],["PermanentHold","Permanent hold"],["TemporaryHold","Until next period"],["NoHold","Resume schedule"]].map(([v,l])=>`<option value="${v}" ${s===v?'selected':''}>${l}</option>`).join("");
+  c.innerHTML=progPeriods.map((p,i)=>{ const off=p.mode==="Off";
+    return `<div class="brow period">
+      <div class="f" style="flex:0 0 108px"><span class="mini">Time</span><input type="time" value="${esc(p.time||'')}" onchange="updPeriod(${i},'time',this.value)"></div>
+      <div class="f"><span class="mini">Mode</span><div class="field sel"><select onchange="updPeriod(${i},'mode',this.value)">${modeOpts(p.mode||'')}</select></div></div>
+      <div class="f"><span class="mini">Heat °</span><input type="number" value="${p.heat??''}" ${off?'disabled':''} onchange="updPeriod(${i},'heat',this.value)"></div>
+      <div class="f"><span class="mini">Cool °</span><input type="number" value="${p.cool??''}" ${off?'disabled':''} onchange="updPeriod(${i},'cool',this.value)"></div>
+      <div class="f grow"><span class="mini">Hold</span><div class="field sel"><select onchange="updPeriod(${i},'hold',this.value)">${holdOpts(p.hold||'')}</select></div></div>
+      <button class="btn danger rm" aria-label="Remove period" onclick="rmPeriod(${i})">✕</button>
+    </div>`;
+  }).join("");
+}
+function fmtProgram(r){
   const days=r.days&&r.days.length?r.days.join(" ").toUpperCase():"every day";
   const tgt=r.targets==="all"?"all zones":(Array.isArray(r.targets)?r.targets.map(deviceName).join(", "):deviceName(r.targets));
-  const a=r.action||{};
-  return {when:`${esc(r.time)} · ${esc(days)}`,
-    what:`<span class="rname">${esc(r.name||r.id)}</span> — ${esc(tgt)}: ${esc(a.mode||'')} `+
-         `${a.heatSetpoint!=null?'H'+esc(a.heatSetpoint)+'°':''} ${a.coolSetpoint!=null?'C'+esc(a.coolSetpoint)+'°':''} `+
-         `<span style="color:var(--faint)">(${esc(a.thermostatSetpointStatus||'')})</span>`};
+  const pers=(r.periods||[]).map(p=>`<span class="pp"><b>${esc(p.time)}</b> ${esc(actionSummary(p.action||{}))}</span>`).join("");
+  return {days:esc(days),tgt:esc(tgt),pers};
 }
 async function loadSchedules(){
   try{
-    const r=await api("/api/schedules"); const rules=r.schedules||[];
+    const r=await api("/api/schedules"); const rules=r.schedules||[]; state.schedules=rules;
     document.getElementById("schedCount").textContent=rules.length||"0";
     const list=document.getElementById("ruleList");
     if(!rules.length){ list.innerHTML=`<div class="empty"><div class="e-ic">${IC.inbox}</div>
-      <div class="big">No schedule rules</div>
-      <div class="lede">Add one below to move zones automatically — night setbacks, weekend modes, holiday setpoints.</div></div>`; return; }
+      <div class="big">No programs yet</div>
+      <div class="lede">Create a daily program below — set ON/OFF times or timed temperature changes for your zones.</div></div>`; return; }
     list.innerHTML="";
-    for(const r of rules){ const f=fmtRule(r); const div=document.createElement("div");
-      div.className="rule";
-      div.innerHTML=`<button class="toggle ${r.enabled?'on':''}" role="switch" aria-checked="${!!r.enabled}" aria-label="Enable rule ${esc(r.name||r.id)}" onclick="toggleRule('${r.id}',${!r.enabled})"></button>
-        <div class="when">${f.when}</div><div class="what">${f.what}</div>
-        <button class="btn danger sm" onclick="delRule('${r.id}',this)" aria-label="Delete rule">Delete</button>`;
+    for(const r of rules){ const f=fmtProgram(r); const div=document.createElement("div");
+      div.className="auto-item"+(r.enabled?"":" disabled");
+      div.innerHTML=`<div class="auto-head">
+          <button class="toggle ${r.enabled?'on':''}" role="switch" aria-checked="${!!r.enabled}" aria-label="Enable ${esc(r.name||r.id)}" onclick="toggleRule('${r.id}',${!r.enabled})"></button>
+          <span class="aname">${esc(r.name||r.id)}</span>
+          <span class="flexspace">
+            <button class="btn sm" onclick="editProgram('${r.id}')">Edit</button>
+            <button class="btn danger sm" onclick="delRule('${r.id}',this)" aria-label="Delete program">Delete</button></span></div>
+        <div class="auto-trigger">${f.days} · ${f.tgt}</div>
+        <div class="prog-periods">${f.pers}</div>`;
       list.appendChild(div); }
   }catch(e){}
 }
-async function addRule(btn){
-  const rule={ name:document.getElementById("f-name").value||"Rule",
-    time:document.getElementById("f-time").value, days:[...selDays],
-    targets:document.getElementById("f-target").value,
-    action:{ mode:document.getElementById("f-mode").value,
-      heatSetpoint:Number(document.getElementById("f-heat").value),
-      coolSetpoint:Number(document.getElementById("f-cool").value),
-      thermostatSetpointStatus:document.getElementById("f-hold").value } };
-  try{ await withBusy(btn,()=>api("/api/schedules",{method:"POST",body:JSON.stringify(rule)}));
-    toast("Rule added"); document.getElementById("f-name").value=""; selDays.clear();
-    renderDayPicker(); loadSchedules();
-  }catch(e){ toast("Couldn't add rule: "+e.message,true); }
+function resetProgramForm(){
+  editingProgram=null; selDays=new Set(); progPeriods=[];
+  const nm=document.getElementById("p-name"); if(nm)nm.value="";
+  const t=document.getElementById("p-target"); if(t)t.value="all";
+  document.getElementById("progFormTitle").textContent="New program";
+  document.getElementById("p-save").textContent="Create program";
+  document.getElementById("p-cancel").hidden=true;
+  renderDayPicker(); renderPeriods();
+}
+function editProgram(id){
+  const r=(state.schedules||[]).find(x=>x.id===id); if(!r) return;
+  editingProgram=id;
+  document.getElementById("p-name").value=r.name||"";
+  populateTargets();
+  const t=document.getElementById("p-target");
+  t.value = Array.isArray(r.targets) ? (r.targets[0]||"all") : (r.targets||"all");
+  selDays=new Set((r.days||[]).map(d=>String(d).toLowerCase()));
+  progPeriods=(r.periods||[]).map(p=>{ const a=p.action||{};
+    return {time:p.time,mode:a.mode||'',heat:a.heatSetpoint??'',cool:a.coolSetpoint??'',hold:a.thermostatSetpointStatus||''}; });
+  document.getElementById("progFormTitle").textContent="Edit program";
+  document.getElementById("p-save").textContent="Save changes";
+  document.getElementById("p-cancel").hidden=false;
+  renderDayPicker(); renderPeriods();
+  document.getElementById("progFormTitle").scrollIntoView({behavior:"smooth",block:"start"});
+}
+async function saveProgram(btn){
+  const name=(document.getElementById("p-name").value.trim())||"Program";
+  const target=document.getElementById("p-target").value;
+  if(!progPeriods.length){ toast("Add at least one period",true); return; }
+  const periods=[];
+  for(const p of progPeriods){
+    if(!p.time){ toast("Every period needs a time",true); return; }
+    const a=periodAction(p);
+    if(!Object.keys(a).length){ toast("Each period needs a mode or a setpoint",true); return; }
+    periods.push({time:p.time,action:a});
+  }
+  const rule={name,days:[...selDays],targets:target,periods};
+  try{
+    if(editingProgram)
+      await withBusy(btn,()=>api("/api/schedules/"+editingProgram,{method:"PUT",body:JSON.stringify(rule)}));
+    else
+      await withBusy(btn,()=>api("/api/schedules",{method:"POST",body:JSON.stringify(rule)}));
+    toast(editingProgram?"Program updated":"Program created");
+    resetProgramForm(); loadSchedules();
+  }catch(e){ toast("Couldn't save: "+e.message,true); }
 }
 async function delRule(id,btn){
-  if(!await confirmDialog("Delete this schedule rule? This can't be undone.")) return;
-  try{ await withBusy(btn,()=>api("/api/schedules/"+id,{method:"DELETE"})); toast("Rule deleted"); loadSchedules(); }
-  catch(e){ toast(e.message,true); }
+  if(!await confirmDialog("Delete this program? This can't be undone.")) return;
+  try{ await withBusy(btn,()=>api("/api/schedules/"+id,{method:"DELETE"})); toast("Program deleted");
+    if(editingProgram===id) resetProgramForm(); loadSchedules();
+  }catch(e){ toast(e.message,true); }
 }
 async function toggleRule(id,en){ try{
     await api("/api/schedules/"+id+"/enabled",{method:"POST",body:JSON.stringify({enabled:en})});
@@ -868,11 +978,18 @@ function populatePickers(){ makePicker("g-shed"); makePicker("g-rotate");
 
 function tgtName(t){ return t==="all" ? "all zones"
   : Array.isArray(t) ? (t.length?t.map(deviceName).join(", "):"none") : deviceName(t); }
+const MATCH_WORDS={equals:"is",not_equals:"is not",contains:"contains",regex:"matches",gt:">",lt:"<",between:"between"};
+function condDesc(c){
+  const subj=c.field?`<i>${esc(c.field)}</i>`:"payload";
+  if(c.type==="any") return `any message on <b>${esc(c.topic)}</b>`;
+  if(c.type==="between") return `<b>${esc(c.topic)}</b>: ${subj} between <b>${esc(c.value)}</b>–<b>${esc(c.value2)}</b>`;
+  return `<b>${esc(c.topic)}</b>: ${subj} ${MATCH_WORDS[c.type]||esc(c.type)} <b>${esc(c.value)}</b>`;
+}
 function matchDesc(tr){
-  const m=tr.match||{}; const subj=m.field?`<i>${esc(m.field)}</i>`:"payload";
-  const map={equals:"is",not_equals:"is not",contains:"contains",regex:"matches",gt:">",lt:"<"};
-  if(m.type==="any") return `any message on <b>${esc(tr.topic)}</b>`;
-  return `<b>${esc(tr.topic)}</b>: ${subj} ${map[m.type]||esc(m.type)} <b>${esc(m.value)}</b>`;
+  tr=tr||{}; const conds=tr.conditions||[];
+  if(!conds.length) return "(no conditions)";
+  const joiner=tr.mode==="any"?" <span style='color:var(--faint)'>OR</span> ":" <span style='color:var(--faint)'>AND</span> ";
+  return conds.map(condDesc).join(joiner);
 }
 function actionDesc(a){
   if(a.type==="set") return `Set ${esc(tgtName(a.targets))} → ${esc(valShort(a.values))}`;
@@ -889,7 +1006,7 @@ function valShort(v){ v=v||{}; const b=[]; if(v.mode)b.push(v.mode);
 async function loadAutomations(){
   try{
     const r=await api("/api/automations");
-    const rules=r.automations||[]; state.autoStatus=r.status||{};
+    const rules=r.automations||[]; state.autoStatus=r.status||{}; state.autos=rules;
     document.getElementById("autoCount").textContent=rules.length||"0";
 
     const strip=document.getElementById("autoStripe"); const bits=[];
@@ -916,6 +1033,7 @@ async function loadAutomations(){
           <span class="aname">${esc(rule.name||rule.id)}</span>
           <span class="flexspace">
             <button class="btn sm" onclick="runAuto('${rule.id}',this)">Run now</button>
+            <button class="btn sm" onclick="editAuto('${rule.id}')">Edit</button>
             <button class="btn danger sm" onclick="delAuto('${rule.id}',this)" aria-label="Delete automation">Delete</button>
           </span>
         </div>
@@ -1045,20 +1163,78 @@ function renderDraftActions(){
     `<button class="x" aria-label="Remove action" onclick="draftActions.splice(${i},1);renderDraftActions()">✕</button></div>`).join("")
     || `<div style="color:var(--faint);font-size:12.5px;margin-bottom:8px">No actions yet — add one below.</div>`;
 }
-async function createCustomRule(btn){
-  const topic=document.getElementById("c-topic").value.trim();
-  const mtype=document.getElementById("c-mtype").value;
-  if(!topic){ toast("Enter a trigger topic",true); return; }
+/* ---- trigger conditions (AND/OR) ---- */
+let draftConds=[];
+let editingAuto=null;
+function updCond(i,k,v){ draftConds[i][k]=v; if(k==="type") renderConds(); }
+function addCond(){ draftConds.push({topic:"",type:"equals",value:"",value2:"",field:"",ignore_case:true}); renderConds(); }
+function rmCond(i){ draftConds.splice(i,1); renderConds(); }
+function renderConds(){
+  const c=document.getElementById("c-conditions"); if(!c) return;
+  if(!draftConds.length){ c.innerHTML=`<div class="conds-empty">No conditions yet — add one below.</div>`; return; }
+  const typeOpts=s=>[["equals","payload equals"],["not_equals","payload is not"],["contains","payload contains"],
+    ["regex","matches regex"],["gt","greater than"],["lt","less than"],["between","between (range)"],["any","any message"]]
+    .map(([v,l])=>`<option value="${v}" ${s===v?'selected':''}>${l}</option>`).join("");
+  c.innerHTML=draftConds.map((cd,i)=>{ const isAny=cd.type==="any", isBet=cd.type==="between";
+    return `<div class="brow cond">
+      <div class="f grow"><span class="mini">Topic</span><input class="mono" value="${esc(cd.topic||'')}" placeholder="facility/power/load" onchange="updCond(${i},'topic',this.value)"></div>
+      <div class="f"><span class="mini">Match</span><div class="field sel"><select onchange="updCond(${i},'type',this.value)">${typeOpts(cd.type)}</select></div></div>
+      ${isAny?'':`<div class="f"><span class="mini">${isBet?'Min':'Value'}</span><input class="mono" value="${esc(cd.value??'')}" placeholder="on / 85" onchange="updCond(${i},'value',this.value)"></div>`}
+      ${isBet?`<div class="f"><span class="mini">Max</span><input class="mono" value="${esc(cd.value2??'')}" onchange="updCond(${i},'value2',this.value)"></div>`:''}
+      <div class="f"><span class="mini">JSON field</span><input class="mono" value="${esc(cd.field||'')}" placeholder="optional" onchange="updCond(${i},'field',this.value)"></div>
+      <div class="f" style="flex:0 0 auto"><span class="mini">&nbsp;</span><label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);height:38px"><input type="checkbox" ${cd.ignore_case?'checked':''} onchange="updCond(${i},'ignore_case',this.checked)"> ignore case</label></div>
+      <button class="btn danger rm" aria-label="Remove condition" onclick="rmCond(${i})">✕</button>
+    </div>`;
+  }).join("");
+}
+function resetAutoForm(){
+  editingAuto=null; draftActions=[];
+  draftConds=[{topic:"",type:"equals",value:"",value2:"",field:"",ignore_case:true}];
+  document.getElementById("c-name").value="";
+  document.getElementById("c-mode").value="all";
+  document.getElementById("c-retrig").value="on_change";
+  document.getElementById("c-create").textContent="Create automation";
+  document.getElementById("c-cancel").hidden=true;
+  renderConds(); renderDraftActions();
+}
+function editAuto(id){
+  const r=(state.autos||[]).find(x=>x.id===id); if(!r) return;
+  editingAuto=id; const tr=r.trigger||{};
+  document.getElementById("c-name").value=r.name||"";
+  document.getElementById("c-mode").value=tr.mode||"all";
+  document.getElementById("c-retrig").value=tr.retrigger||"on_change";
+  draftConds=(tr.conditions||[]).map(c=>({topic:c.topic||"",type:c.type||"equals",
+    value:c.value??"",value2:c.value2??"",field:c.field||"",ignore_case:c.ignore_case!==false}));
+  if(!draftConds.length) draftConds=[{topic:"",type:"equals",value:"",value2:"",field:"",ignore_case:true}];
+  draftActions=(r.actions||[]).map(a=>Object.assign({},a));
+  document.getElementById("c-create").textContent="Save changes";
+  document.getElementById("c-cancel").hidden=false;
+  renderConds(); renderDraftActions();
+  const adv=document.querySelector("details.adv"); if(adv){ adv.open=true; adv.scrollIntoView({behavior:"smooth",block:"start"}); }
+}
+async function saveAuto(btn){
+  const name=document.getElementById("c-name").value.trim()||"Custom rule";
+  const mode=document.getElementById("c-mode").value;
+  const retrigger=document.getElementById("c-retrig").value;
+  const conditions=[];
+  for(const cd of draftConds){
+    if(!(cd.topic||"").trim()){ toast("Every condition needs a topic",true); return; }
+    const c={topic:cd.topic.trim(),type:cd.type,ignore_case:!!cd.ignore_case};
+    if(cd.type!=="any"){ c.value=cd.value; if(cd.type==="between") c.value2=cd.value2; }
+    if((cd.field||"").trim()) c.field=cd.field.trim();
+    conditions.push(c);
+  }
+  if(!conditions.length){ toast("Add at least one condition",true); return; }
   if(!draftActions.length){ toast("Add at least one action",true); return; }
-  const match={type:mtype,ignore_case:true};
-  if(mtype!=="any"){ match.value=document.getElementById("c-mvalue").value.trim(); }
-  const field=document.getElementById("c-field").value.trim(); if(field)match.field=field;
-  const rule={ name:document.getElementById("c-name").value.trim()||"Custom rule", enabled:true,
-    trigger:{topic,match,retrigger:document.getElementById("c-retrig").value}, actions:draftActions };
-  try{ await withBusy(btn,()=>postRule(rule)); toast("Automation created");
-    draftActions=[]; renderDraftActions(); document.getElementById("c-name").value="";
-    loadAutomations();
-  }catch(e){ toast("Couldn't create: "+e.message,true); }
+  const rule={name,enabled:true,trigger:{mode,retrigger,conditions},actions:draftActions};
+  try{
+    if(editingAuto)
+      await withBusy(btn,()=>api("/api/automations/"+editingAuto,{method:"PUT",body:JSON.stringify(rule)}));
+    else
+      await withBusy(btn,()=>postRule(rule));
+    toast(editingAuto?"Automation updated":"Automation created");
+    resetAutoForm(); loadAutomations();
+  }catch(e){ toast("Couldn't save: "+e.message,true); }
 }
 
 /* ---------- tabs (ARIA + keyboard) ---------- */
@@ -1087,10 +1263,18 @@ document.getElementById("refreshBtn").onclick=function(){
     .then(()=>{ toast("Refreshing from Honeywell…"); setTimeout(()=>{refreshStatus();loadDevices();},1500); })
     .catch(e=>toast(e.message,true));
 };
-document.getElementById("addRuleBtn").onclick=function(){ addRule(this); };
+// schedules / program builder
+document.getElementById("p-add-on").onclick=()=>addPeriod("on");
+document.getElementById("p-add-temp").onclick=()=>addPeriod("temp");
+document.getElementById("p-add-off").onclick=()=>addPeriod("off");
+document.getElementById("p-save").onclick=function(){ saveProgram(this); };
+document.getElementById("p-cancel").onclick=resetProgramForm;
+// automations
 document.getElementById("g-create").onclick=function(){ createGeneratorRules(this); };
+document.getElementById("c-add-cond").onclick=addCond;
 document.getElementById("a-add").onclick=addDraftAction;
-document.getElementById("c-create").onclick=function(){ createCustomRule(this); };
+document.getElementById("c-create").onclick=function(){ saveAuto(this); };
+document.getElementById("c-cancel").onclick=resetAutoForm;
 
 function tick(){ document.getElementById("clock").textContent=
   new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); }
@@ -1098,7 +1282,9 @@ function tick(){ document.getElementById("clock").textContent=
 /* ---------- boot ---------- */
 paintThemeBtn();
 renderZones();            // shows skeleton until first load
-renderDayPicker(); renderActionFields(); renderDraftActions();
+renderActionFields();     // action-type dynamic fields
+resetProgramForm();       // day picker + empty periods
+resetAutoForm();          // one blank condition + empty actions
 tick(); setInterval(tick,1000);
 refreshStatus(); loadDevices(); loadSchedules(); loadAlerts(); loadAutomations();
 setInterval(()=>{ refreshStatus(); loadDevices(); loadAlerts(); loadAutomations(); }, 10000);
