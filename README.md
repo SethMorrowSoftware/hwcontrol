@@ -48,9 +48,11 @@ visible within one poll cycle, not instantly.
 
 **The rate limits are tight.** The Resideo "Basic" developer plan is sized roughly
 for **polling ~20 devices every 5 minutes**. This app is built around that: each
-poll fetches your locations once, then **one call per location** returns every
-thermostat there — and a client-side rate limiter (minimum spacing + rolling
-hourly cap) sits underneath as a safety net. If you have more than ~20 devices or
+poll fetches all of your locations in **a single call** — the `/locations`
+response already embeds every device's full state, so the poller reads thermostats
+straight from it instead of making a separate call per location — and a
+client-side rate limiter (minimum spacing + rolling hourly cap) sits underneath as
+a safety net. If you have more than ~20 devices or
 want faster polling, email **developerinfo@resideo.com** to request a higher limit,
 then lower `POLL_INTERVAL_SECONDS`. Automations and rotations also issue control
 calls, so keep rotation intervals sane (the app enforces a 5-minute minimum, which
@@ -482,7 +484,9 @@ This is designed to coexist with the other services on the facility server:
   isn't writable. Re-run `python authorize.py` and confirm the file's permissions.
 - **429 / rate limit** — you're polling too many devices too often. Raise
   `POLL_INTERVAL_SECONDS`, reduce rotation frequency, and/or request a higher limit
-  from Resideo.
+  from Resideo. When a poll is throttled the dashboard says so in place of the zone
+  grid; zones return on their own once the window clears, so there's no need to
+  restart the service (restarting only adds more calls and prolongs the throttle).
 - **Automations don't fire live** — `MQTT_ENABLED` must be `true` and the broker
   reachable (check the Automations status strip). Confirm your equipment is
   actually publishing to the exact topic in the rule. Use **Run now** to test the
