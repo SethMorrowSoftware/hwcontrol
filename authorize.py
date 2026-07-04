@@ -1,0 +1,89 @@
+"""
+authorize.py
+------------
+A tiny standalone helper to complete the OAuth login and sanity-check your
+credentials WITHOUT the web server. Handy for first-time setup or debugging the
+exact error the original script hit.
+
+Usage:
+    python authorize.py
+
+It opens your browser, captures the redirect on the port in your redirect URI,
+exchanges the code for tokens (saved to tokens.json), then lists your locations
+and thermostats so you can confirm everything works end to end.
+"""
+
+from __future__ import annotations
+
+import logging
+import webbrowser
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs, urlparse
+
+from config import Config
+from honeywell_client import HoneywellClient
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+
+class _Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        q = parse_qs(urlparse(self.path).query)
+        self.send_response(200)
+        self.send_header("Content-type", "text/html")
+        self.end_headers()
+        if "code" in q:
+            self.server.auth_code = q["code"][0]
+            self.wfile.write(b"<h3>Authorized. You can close this tab and return to the terminal.</h3>")
+        else:
+            err = q.get("error", ["unknown"])[0]
+            self.wfile.write(f"<h3>Authorization failed: {err}</h3>".encode())
+
+    def log_message(self, *a):
+        return
+
+
+def main():
+    Config.require_credentials()
+    client = HoneywellClient(
+        api_key=Config.API_KEY,
+        api_secret=Config.API_SECRET,
+        redirect_uri=Config.REDIRECT_URI,
+    )
+
+    url = client.authorize_url(state="cli")
+    parsed = urlparse(Config.REDIRECT_URI)
+    port = parsed.port or 80
+
+    print("\nRedirect URI configured as:", Config.REDIRECT_URI)
+    print("Make sure that EXACT string is registered on the developer portal.\n")
+    print("Opening browser to authorize... if it doesn't open, visit:\n", url, "\n")
+    webbrowser.open(url)
+
+    httpd = HTTPServer(("", port), _Handler)
+    httpd.auth_code = None
+    print(f"Waiting for the redirect on port {port} ...")
+    httpd.handle_request()
+
+    if not httpd.auth_code:
+        print("No authorization code received. Check the redirect URI match and try again.")
+        return
+
+    print("Got authorization code; exchanging for tokens...")
+    client.exchange_code(httpd.auth_code)
+    print("Tokens saved to tokens.json\n")
+
+    print("Fetching locations and thermostats...\n")
+    for loc in client.get_locations():
+        print(f"Location: {loc.get('name')} (ID {loc.get('locationID')})")
+        for t in client.get_thermostats(loc.get("locationID")):
+            cv = t.get("changeableValues", {})
+            print(f"  - {t.get('userDefinedDeviceName') or t.get('name')} "
+                  f"[{t.get('deviceID')}] online={t.get('isAlive')} "
+                  f"temp={t.get('indoorTemperature')} mode={cv.get('mode')} "
+                  f"heat={cv.get('heatSetpoint')} cool={cv.get('coolSetpoint')}")
+    print("\nAll good. Start the dashboard with:  python app.py")
+
+
+if __name__ == "__main__":
+    main()

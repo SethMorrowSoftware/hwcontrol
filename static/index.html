@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Facility Climate Control</title>
+<style>
+  :root{
+    --ink:#0F1419; --panel:#181F27; --raised:#1F2831; --line:#2A3640;
+    --text:#E8EDF2; --muted:#8A97A3; --faint:#5A6673;
+    --heat:#F2994A; --heat-dim:#4a3524;
+    --cool:#4AA8F2; --cool-dim:#1f3547;
+    --auto:#A78BFA; --off:#5A6673;
+    --ok:#4ADE80; --warn:#E8B84A; --crit:#E85A5A;
+    --mono:ui-monospace,"SF Mono","Cascadia Code","Roboto Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --radius:10px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--ink);color:var(--text);font-family:var(--sans);
+    -webkit-font-smoothing:antialiased;font-size:15px;line-height:1.5}
+  a{color:var(--cool);text-decoration:none}
+  button{font-family:inherit}
+
+  /* ---- top bar ---- */
+  header{position:sticky;top:0;z-index:20;background:rgba(15,20,25,.92);
+    backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+  .bar{display:flex;align-items:center;gap:18px;padding:14px 22px;max-width:1400px;margin:0 auto}
+  .brand{display:flex;align-items:baseline;gap:10px;margin-right:auto}
+  .brand h1{font-size:16px;font-weight:600;letter-spacing:.02em;margin:0}
+  .brand .sub{font-size:12px;color:var(--muted);font-family:var(--mono)}
+  .pills{display:flex;align-items:center;gap:14px;font-size:12px;color:var(--muted);
+    font-family:var(--mono)}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;
+    vertical-align:middle;background:var(--faint)}
+  .dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  .dot.off{background:var(--crit)}
+  .btn{background:var(--raised);border:1px solid var(--line);color:var(--text);
+    padding:7px 13px;border-radius:var(--radius);cursor:pointer;font-size:13px;
+    transition:border-color .15s,background .15s}
+  .btn:hover{border-color:var(--muted);background:#26313c}
+  .btn:active{transform:scale(.98)}
+  .btn.primary{background:var(--cool);border-color:var(--cool);color:#06243c;font-weight:600}
+  .btn.primary:hover{filter:brightness(1.08)}
+  .btn.warm{background:var(--heat);border-color:var(--heat);color:#3a2410;font-weight:600}
+
+  nav.tabs{display:flex;gap:4px;padding:0 22px;max-width:1400px;margin:0 auto}
+  nav.tabs button{background:none;border:none;color:var(--muted);padding:11px 4px;
+    margin-right:22px;cursor:pointer;font-size:13px;border-bottom:2px solid transparent}
+  nav.tabs button.active{color:var(--text);border-bottom-color:var(--cool)}
+  nav.tabs button .count{color:var(--faint);font-family:var(--mono);margin-left:6px}
+
+  main{max-width:1400px;margin:0 auto;padding:22px}
+  .view{display:none}
+  .view.active{display:block}
+
+  /* ---- banner ---- */
+  .banner{display:flex;align-items:center;gap:14px;background:var(--panel);
+    border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;margin-bottom:20px}
+  .banner.warn{border-color:#5a4a1e}
+
+  /* ---- zone grid ---- */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:16px 18px 18px;position:relative;overflow:hidden}
+  .card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--off)}
+  .card.mode-heat::before{background:var(--heat);box-shadow:0 0 16px var(--heat)}
+  .card.mode-cool::before{background:var(--cool);box-shadow:0 0 16px var(--cool)}
+  .card.mode-auto::before{background:var(--auto)}
+  .card.offline{opacity:.55}
+  .card.offline::before{background:var(--faint);box-shadow:none}
+  .card.dirty{border-color:var(--muted)}
+
+  .chead{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:12px}
+  .cname{font-size:15px;font-weight:600;line-height:1.3}
+  .cid{font-size:11px;color:var(--faint);font-family:var(--mono);margin-top:2px}
+  .status{font-size:11px;font-family:var(--mono);white-space:nowrap}
+  .status .dot{width:7px;height:7px}
+
+  .readout{display:flex;align-items:flex-end;gap:16px;margin:6px 0 16px}
+  .temp{font-family:var(--mono);font-size:44px;font-weight:600;line-height:.9;letter-spacing:-.02em}
+  .temp .u{font-size:18px;color:var(--muted);font-weight:400;margin-left:2px}
+  .meta{font-size:12px;color:var(--muted);font-family:var(--mono);line-height:1.6}
+
+  .modes{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+  .chip{background:var(--raised);border:1px solid var(--line);color:var(--muted);
+    padding:5px 11px;border-radius:20px;font-size:12px;cursor:pointer}
+  .chip:hover{border-color:var(--muted)}
+  .chip.sel{color:var(--text);font-weight:600}
+  .chip.sel[data-mode="Heat"]{background:var(--heat-dim);border-color:var(--heat);color:var(--heat)}
+  .chip.sel[data-mode="Cool"]{background:var(--cool-dim);border-color:var(--cool);color:var(--cool)}
+  .chip.sel[data-mode="Auto"]{border-color:var(--auto);color:var(--auto)}
+  .chip.sel[data-mode="Off"]{border-color:var(--faint);color:var(--text)}
+
+  .sp{display:flex;gap:12px;margin-bottom:14px}
+  .spbox{flex:1;background:var(--ink);border:1px solid var(--line);border-radius:var(--radius);
+    padding:9px 10px}
+  .spbox .lbl{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+    display:flex;align-items:center;gap:5px}
+  .spbox.heat .lbl::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--heat)}
+  .spbox.cool .lbl::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--cool)}
+  .stepper{display:flex;align-items:center;justify-content:space-between;margin-top:5px}
+  .stepper button{width:26px;height:26px;border-radius:6px;border:1px solid var(--line);
+    background:var(--raised);color:var(--text);font-size:16px;cursor:pointer;line-height:1}
+  .stepper button:hover{border-color:var(--muted)}
+  .stepper .val{font-family:var(--mono);font-size:20px;font-weight:600}
+
+  .row{display:flex;gap:10px;align-items:center}
+  select{background:var(--ink);border:1px solid var(--line);color:var(--text);
+    padding:7px 9px;border-radius:var(--radius);font-size:12px;font-family:var(--sans);flex:1}
+  .apply{margin-top:14px;display:flex;gap:10px;align-items:center}
+  .apply .btn{flex:1;text-align:center}
+  .hint{font-size:11px;color:var(--faint);font-family:var(--mono)}
+
+  /* ---- schedules ---- */
+  .rule{display:flex;align-items:center;gap:16px;background:var(--panel);
+    border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;margin-bottom:10px}
+  .rule .when{font-family:var(--mono);font-size:13px;color:var(--cool);min-width:150px}
+  .rule .what{font-size:13px;color:var(--muted);flex:1}
+  .rule .rname{font-weight:600;color:var(--text)}
+  .toggle{width:38px;height:22px;border-radius:12px;background:var(--faint);position:relative;
+    cursor:pointer;border:none;flex:none}
+  .toggle.on{background:var(--ok)}
+  .toggle::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;
+    border-radius:50%;background:#fff;transition:left .15s}
+  .toggle.on::after{left:18px}
+  .form{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:18px;margin-top:6px;display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+  .form label{font-size:12px;color:var(--muted);display:block;margin-bottom:5px}
+  .form input,.form select{width:100%;background:var(--ink);border:1px solid var(--line);
+    color:var(--text);padding:8px 10px;border-radius:8px;font-size:13px;font-family:var(--sans)}
+  .form .full{grid-column:1/-1}
+  .days{display:flex;gap:6px;flex-wrap:wrap}
+  .days .d{padding:6px 10px;border:1px solid var(--line);border-radius:8px;font-size:12px;
+    cursor:pointer;color:var(--muted);font-family:var(--mono);background:var(--ink)}
+  .days .d.on{background:var(--cool-dim);border-color:var(--cool);color:var(--cool)}
+
+  /* ---- alerts ---- */
+  .alert{display:flex;align-items:center;gap:14px;padding:12px 16px;border-radius:var(--radius);
+    background:var(--panel);border:1px solid var(--line);border-left-width:3px;margin-bottom:8px}
+  .alert.critical{border-left-color:var(--crit)}
+  .alert.warning{border-left-color:var(--warn)}
+  .alert.info{border-left-color:var(--cool)}
+  .alert .msg{flex:1;font-size:14px}
+  .alert .ts{font-size:11px;color:var(--faint);font-family:var(--mono)}
+  .alert .sev{font-size:10px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;
+    font-family:var(--mono)}
+  .alert.critical .sev{color:var(--crit)} .alert.warning .sev{color:var(--warn)}
+  .alert.info .sev{color:var(--cool)}
+
+  .empty{text-align:center;color:var(--muted);padding:60px 20px;font-size:14px}
+  .empty .big{font-size:16px;color:var(--text);margin-bottom:6px}
+  .sectitle{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+    margin:26px 0 12px}
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--raised);
+    border:1px solid var(--line);border-radius:var(--radius);padding:12px 18px;font-size:13px;
+    z-index:50;opacity:0;transition:opacity .2s;pointer-events:none}
+  .toast.show{opacity:1}
+  .toast.err{border-color:var(--crit);color:var(--crit)}
+
+  /* ---- automations ---- */
+  .stripe{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:20px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:10px 14px;font-size:12px;font-family:var(--mono);color:var(--muted)}
+  .stat b{color:var(--text);font-weight:600}
+  .stat.live{border-color:var(--heat)} .stat.live b{color:var(--heat)}
+  .autocard{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:18px 20px;margin-bottom:18px}
+  .autocard h3{margin:0 0 4px;font-size:15px;font-weight:600}
+  .autocard .desc{color:var(--muted);font-size:13px;margin-bottom:16px}
+  .autocard.accent{border-color:#4a3a1e}
+  .subgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+  .subgrid .full{grid-column:1/-1}
+  .fld label{font-size:12px;color:var(--muted);display:block;margin-bottom:5px}
+  .fld input,.fld select{width:100%;background:var(--ink);border:1px solid var(--line);
+    color:var(--text);padding:8px 10px;border-radius:8px;font-size:13px;font-family:var(--sans)}
+  .fld input.mono{font-family:var(--mono)}
+  .picker{background:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px;
+    max-height:132px;overflow:auto}
+  .picker .selall{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);
+    padding-bottom:6px;margin-bottom:6px;border-bottom:1px solid var(--line)}
+  .picker .opt{display:flex;align-items:center;gap:8px;font-size:13px;padding:3px 2px}
+  .picker .opt .cid{color:var(--faint);font-family:var(--mono);font-size:11px;margin-left:auto}
+  .picker.empty{color:var(--faint);font-size:12px;font-family:var(--mono);padding:12px}
+  .actrow{display:flex;align-items:center;gap:10px;background:var(--ink);border:1px solid var(--line);
+    border-radius:8px;padding:9px 12px;margin-bottom:8px;font-size:13px}
+  .actrow .tag{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:5px;
+    background:var(--raised);color:var(--cool)}
+  .actrow .body{flex:1;color:var(--muted)}
+  .actrow .x{cursor:pointer;color:var(--faint);border:none;background:none;font-size:16px}
+  .actrow .x:hover{color:var(--crit)}
+  .auto-item{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:14px 16px;margin-bottom:10px}
+  .auto-item.disabled{opacity:.55}
+  .auto-head{display:flex;align-items:center;gap:14px}
+  .auto-head .aname{font-weight:600}
+  .auto-trigger{font-family:var(--mono);font-size:12px;color:var(--cool);margin:8px 0 0}
+  .auto-actions{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.7}
+  .auto-actions .tag{font-family:var(--mono);background:var(--raised);color:var(--muted);
+    padding:1px 7px;border-radius:5px;margin-right:6px}
+  .flexspace{margin-left:auto;display:flex;gap:8px}
+  details.adv summary{cursor:pointer;color:var(--muted);font-size:13px;padding:6px 0}
+  details.adv[open] summary{color:var(--text);margin-bottom:12px}
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <div class="brand">
+      <h1>Facility Climate Control</h1>
+      <span class="sub" id="clock"></span>
+    </div>
+    <div class="pills">
+      <span><span class="dot" id="authDot"></span><span id="authText">checking…</span></span>
+      <span><span class="dot" id="mqttDot"></span>MQTT</span>
+      <span id="pollText">—</span>
+    </div>
+    <button class="btn" id="refreshBtn">Refresh now</button>
+  </div>
+  <nav class="tabs">
+    <button data-tab="zones" class="active">Zones <span class="count" id="zoneCount"></span></button>
+    <button data-tab="automations">Automations <span class="count" id="autoCount"></span></button>
+    <button data-tab="schedules">Schedules <span class="count" id="schedCount"></span></button>
+    <button data-tab="alerts">Alerts <span class="count" id="alertCount"></span></button>
+  </nav>
+</header>
+
+<main>
+  <div id="authBanner"></div>
+
+  <section class="view active" id="view-zones"><div class="grid" id="zoneGrid"></div></section>
+
+  <section class="view" id="view-schedules">
+    <div class="sectitle">Active rules</div>
+    <div id="ruleList"></div>
+    <div class="sectitle">Add a rule</div>
+    <div class="form" id="ruleForm">
+      <div><label>Name</label><input id="f-name" placeholder="Weekday night setback"></div>
+      <div><label>Time (24h)</label><input id="f-time" type="time" value="19:00"></div>
+      <div class="full"><label>Days (leave empty for every day)</label>
+        <div class="days" id="f-days"></div></div>
+      <div><label>Apply to</label><select id="f-target"><option value="all">All zones</option></select></div>
+      <div><label>Mode</label><select id="f-mode">
+        <option>Heat</option><option>Cool</option><option>Auto</option><option>Off</option></select></div>
+      <div><label>Heat setpoint</label><input id="f-heat" type="number" value="62"></div>
+      <div><label>Cool setpoint</label><input id="f-cool" type="number" value="80"></div>
+      <div><label>Hold</label><select id="f-hold">
+        <option value="PermanentHold">Permanent hold</option>
+        <option value="TemporaryHold">Until next schedule change</option>
+        <option value="NoHold">Resume schedule</option></select></div>
+      <div class="full"><button class="btn primary" id="addRuleBtn">Add rule</button></div>
+    </div>
+  </section>
+
+  <section class="view" id="view-automations">
+    <div class="stripe" id="autoStripe"></div>
+
+    <div class="autocard accent">
+      <h3>Generator load-shed</h3>
+      <div class="desc">When your transfer switch reports it's on generator power, turn selected zones
+        off and duty-cycle the rest so they share the generator instead of all running at once.
+        When utility power returns, every zone is restored to how it was. This creates two paired rules.</div>
+      <div class="subgrid">
+        <div class="fld"><label>Generator status topic</label>
+          <input id="g-topic" class="mono" value="facility/generator/status"></div>
+        <div class="fld"><label>JSON field (optional, e.g. power.source)</label>
+          <input id="g-field" class="mono" placeholder="leave blank for a plain payload"></div>
+        <div class="fld"><label>Payload when ON generator</label>
+          <input id="g-on" class="mono" value="on"></div>
+        <div class="fld"><label>Payload when back on utility</label>
+          <input id="g-off" class="mono" value="off"></div>
+        <div class="fld full"><label>Turn these zones OFF (non-critical)</label>
+          <div class="picker" id="g-shed"></div></div>
+        <div class="fld full"><label>Rotate these zones (critical — keep some running)</label>
+          <div class="picker" id="g-rotate"></div></div>
+        <div class="fld"><label>How many rotate at once</label>
+          <input id="g-run" type="number" min="1" value="2"></div>
+        <div class="fld"><label>Rotate interval (minutes, min 5)</label>
+          <input id="g-int" type="number" min="5" value="15"></div>
+        <div class="fld"><label>Heat setpoint while running</label>
+          <input id="g-heat" type="number" value="66"></div>
+        <div class="fld"><label>Cool setpoint while running</label>
+          <input id="g-cool" type="number" value="80"></div>
+        <div class="fld full"><button class="btn warm" id="g-create">Create generator rules</button></div>
+      </div>
+    </div>
+
+    <div class="sectitle">Active automations</div>
+    <div id="autoList"></div>
+
+    <details class="adv">
+      <summary>Build a custom rule — react to any MQTT state</summary>
+      <div class="autocard">
+        <div class="desc">Watch any topic on your broker and run one or more actions when a message matches.
+          Add actions one at a time, then create the rule.</div>
+        <div class="subgrid">
+          <div class="fld"><label>Rule name</label><input id="c-name" placeholder="High demand shed"></div>
+          <div class="fld"><label>Trigger topic</label><input id="c-topic" class="mono" placeholder="facility/power/load"></div>
+          <div class="fld"><label>Match</label><select id="c-mtype">
+            <option value="equals">payload equals</option>
+            <option value="not_equals">payload is not</option>
+            <option value="contains">payload contains</option>
+            <option value="regex">payload matches regex</option>
+            <option value="gt">value greater than</option>
+            <option value="lt">value less than</option>
+            <option value="any">any message</option></select></div>
+          <div class="fld"><label>Value</label><input id="c-mvalue" class="mono" placeholder="on / 85 / backup"></div>
+          <div class="fld"><label>JSON field (optional)</label><input id="c-field" class="mono" placeholder="power.source"></div>
+          <div class="fld"><label>Re-trigger</label><select id="c-retrig">
+            <option value="on_change">only when the state changes</option>
+            <option value="every_message">on every matching message</option></select></div>
+        </div>
+
+        <div class="sectitle" style="margin-top:18px">Actions</div>
+        <div id="c-actions"></div>
+        <div class="subgrid" style="margin-top:6px">
+          <div class="fld"><label>Action type</label><select id="a-type" onchange="renderActionFields()">
+            <option value="set">Set zones (mode / setpoints)</option>
+            <option value="rotate">Rotate a group</option>
+            <option value="snapshot">Snapshot zones (save state)</option>
+            <option value="restore">Restore a snapshot</option>
+            <option value="stop_rotation">Stop a rotation</option></select></div>
+          <div class="fld" id="a-dynamic-1"></div>
+          <div class="fld full" id="a-dynamic-2"></div>
+          <div class="fld full"><button class="btn" id="a-add">Add action</button></div>
+        </div>
+        <div class="fld full"><button class="btn primary" id="c-create">Create automation</button></div>
+      </div>
+    </details>
+  </section>
+
+  <section class="view" id="view-alerts"><div id="alertList"></div></section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const TOKEN = new URLSearchParams(location.search).get("token") || "";
+const HDRS = TOKEN ? {"X-Token":TOKEN} : {};
+const qp = TOKEN ? ("?token="+encodeURIComponent(TOKEN)) : "";
+
+const state = { devices:[], pending:{} };  // pending[id] = {mode,heat,cool,hold,dirty}
+
+async function api(path, opts={}){
+  const o = Object.assign({headers:Object.assign({"Content-Type":"application/json"},HDRS)}, opts);
+  const r = await fetch(path+qp, o);
+  if(!r.ok){ let m; try{m=(await r.json()).detail||r.statusText}catch{m=r.statusText} throw new Error(m); }
+  return r.status===204 ? null : r.json();
+}
+function toast(msg, err=false){
+  const t=document.getElementById("toast"); t.textContent=msg;
+  t.className="toast show"+(err?" err":""); setTimeout(()=>t.className="toast",2600);
+}
+function ago(ts){ if(!ts) return "never";
+  const s=Math.floor(Date.now()/1000-ts);
+  if(s<60) return s+"s ago"; if(s<3600) return Math.floor(s/60)+"m ago";
+  return Math.floor(s/3600)+"h ago"; }
+
+/* ---------- status + header ---------- */
+async function refreshStatus(){
+  try{
+    const s = await api("/api/status");
+    const a=document.getElementById("authDot"), at=document.getElementById("authText");
+    a.className="dot "+(s.authorized?"on":"off");
+    at.textContent = s.authorized ? "Connected" : "Not connected";
+    document.getElementById("mqttDot").className="dot "+(s.mqtt_connected?"on":"");
+    document.getElementById("pollText").textContent =
+      "Polled "+ago(s.last_poll_ts)+(s.last_poll_error?" · error":"");
+    document.getElementById("authBanner").innerHTML = s.authorized ? "" :
+      `<div class="banner"><div style="flex:1">
+         <div style="font-weight:600;margin-bottom:3px">Connect your Honeywell account</div>
+         <div style="color:var(--muted);font-size:13px">Authorize once to let the dashboard read and control your thermostats.</div>
+       </div><a class="btn primary" href="/auth/login${qp}">Connect account</a></div>`;
+  }catch(e){ /* server may still be starting */ }
+}
+
+/* ---------- zones ---------- */
+function modeClass(d){ if(!d.online) return "offline";
+  const m=(d.mode||"").toLowerCase();
+  return m==="heat"?"mode-heat":m==="cool"?"mode-cool":m==="auto"?"mode-auto":""; }
+
+function ensurePending(d){
+  const p=state.pending[d.deviceID];
+  if(!p || !p.dirty){
+    state.pending[d.deviceID]={mode:d.mode,heat:d.heatSetpoint,cool:d.coolSetpoint,
+      hold:d.setpointStatus||"TemporaryHold",dirty:p?p.dirty:false};
+  }
+  return state.pending[d.deviceID];
+}
+function markDirty(id){ state.pending[id].dirty=true; renderZones(); }
+
+function step(id,key,delta){ const p=state.pending[id]; if(p[key]==null)p[key]=70;
+  p[key]=Math.round(p[key]+delta); p.dirty=true; renderZones(); }
+function setMode(id,m){ state.pending[id].mode=m; state.pending[id].dirty=true; renderZones(); }
+function setHold(id,v){ state.pending[id].hold=v; state.pending[id].dirty=true; }
+
+async function applyZone(id){
+  const p=state.pending[id];
+  const body={mode:p.mode,heatSetpoint:p.heat,coolSetpoint:p.cool,thermostatSetpointStatus:p.hold};
+  try{
+    await api("/api/devices/"+id+"/set",{method:"POST",body:JSON.stringify(body)});
+    p.dirty=false; toast("Applied to "+(deviceName(id))); loadDevices();
+  }catch(e){ toast("Couldn't apply: "+e.message,true); }
+}
+function resetZone(id){ delete state.pending[id]; renderZones(); }
+function deviceName(id){ const d=state.devices.find(x=>x.deviceID===id); return d?d.name:id; }
+
+function renderZones(){
+  const grid=document.getElementById("zoneGrid");
+  document.getElementById("zoneCount").textContent = state.devices.length||"";
+  if(!state.devices.length){
+    grid.innerHTML = `<div class="empty" style="grid-column:1/-1">
+      <div class="big">No thermostats yet</div>
+      Once the account is connected and the first poll runs, your zones appear here.</div>`;
+    return;
+  }
+  grid.innerHTML="";
+  for(const d of state.devices){
+    const p=ensurePending(d);
+    const modes = (d.allowedModes&&d.allowedModes.length)?d.allowedModes:["Heat","Cool","Off"];
+    const card=document.createElement("div");
+    card.className="card "+modeClass(d)+(p.dirty?" dirty":"");
+    const temp = d.indoorTemperature!=null?Math.round(d.indoorTemperature):"–";
+    const unit = (d.units||"F").charAt(0);
+    const hum = d.indoorHumidity!=null?d.indoorHumidity+"% RH":"";
+    const out = d.outdoorTemperature!=null?("out "+Math.round(d.outdoorTemperature)+"°"):"";
+    card.innerHTML = `
+      <div class="chead">
+        <div><div class="cname">${d.name}</div><div class="cid">${d.deviceID}</div></div>
+        <div class="status"><span class="dot ${d.online?'on':'off'}"></span>${d.online?'online':'OFFLINE'}</div>
+      </div>
+      <div class="readout">
+        <div class="temp">${temp}<span class="u">°${unit}</span></div>
+        <div class="meta">${hum}<br>${out}${d.scheduleStatus?'<br>'+d.scheduleStatus:''}</div>
+      </div>
+      <div class="modes">${modes.map(m=>
+        `<span class="chip ${p.mode===m?'sel':''}" data-mode="${m}" onclick="setMode('${d.deviceID}','${m}')">${m}</span>`).join("")}</div>
+      <div class="sp">
+        <div class="spbox heat"><div class="lbl">Heat</div>
+          <div class="stepper">
+            <button onclick="step('${d.deviceID}','heat',-1)">−</button>
+            <span class="val">${p.heat!=null?p.heat:'–'}°</span>
+            <button onclick="step('${d.deviceID}','heat',1)">+</button></div></div>
+        <div class="spbox cool"><div class="lbl">Cool</div>
+          <div class="stepper">
+            <button onclick="step('${d.deviceID}','cool',-1)">−</button>
+            <span class="val">${p.cool!=null?p.cool:'–'}°</span>
+            <button onclick="step('${d.deviceID}','cool',1)">+</button></div></div>
+      </div>
+      <div class="row">
+        <select onchange="setHold('${d.deviceID}',this.value)">
+          <option value="TemporaryHold" ${p.hold==='TemporaryHold'?'selected':''}>Hold until next schedule</option>
+          <option value="PermanentHold" ${p.hold==='PermanentHold'?'selected':''}>Permanent hold</option>
+          <option value="NoHold" ${p.hold==='NoHold'?'selected':''}>Resume schedule</option>
+        </select>
+      </div>
+      <div class="apply">
+        <button class="btn ${modeClass(d)==='mode-heat'?'warm':'primary'}" onclick="applyZone('${d.deviceID}')">Apply changes</button>
+        ${p.dirty?`<button class="btn" onclick="resetZone('${d.deviceID}')">Reset</button>`:''}
+      </div>`;
+    grid.appendChild(card);
+  }
+}
+
+async function loadDevices(){
+  try{
+    const r=await api("/api/devices"); state.devices=r.devices||[];
+    renderZones(); populateTargets();
+    // Rebuild zone pickers only when the set of devices actually changes, so a
+    // poll doesn't wipe selections you're in the middle of making.
+    const sig=state.devices.map(d=>d.deviceID).sort().join("|");
+    if(sig!==state.pickerSig){ state.pickerSig=sig; populatePickers(); }
+  }catch(e){ /* not fatal */ }
+}
+
+/* ---------- schedules ---------- */
+const DAYS=["mon","tue","wed","thu","fri","sat","sun"];
+let selDays=new Set();
+function renderDayPicker(){
+  const c=document.getElementById("f-days"); c.innerHTML="";
+  DAYS.forEach(d=>{ const el=document.createElement("span");
+    el.className="d"+(selDays.has(d)?" on":""); el.textContent=d;
+    el.onclick=()=>{ selDays.has(d)?selDays.delete(d):selDays.add(d); renderDayPicker(); };
+    c.appendChild(el); });
+}
+function populateTargets(){
+  const sel=document.getElementById("f-target"); const cur=sel.value;
+  sel.innerHTML='<option value="all">All zones</option>'+
+    state.devices.map(d=>`<option value="${d.deviceID}">${d.name}</option>`).join("");
+  sel.value=cur;
+}
+function fmtRule(r){
+  const days=r.days&&r.days.length?r.days.join(" ").toUpperCase():"every day";
+  const tgt=r.targets==="all"?"all zones":(Array.isArray(r.targets)?r.targets.map(deviceName).join(", "):deviceName(r.targets));
+  const a=r.action||{};
+  return {when:`${r.time} · ${days}`,
+    what:`<span class="rname">${r.name||r.id}</span> — ${tgt}: ${a.mode||''} `+
+         `${a.heatSetpoint!=null?'H'+a.heatSetpoint+'°':''} ${a.coolSetpoint!=null?'C'+a.coolSetpoint+'°':''} `+
+         `<span class="hint">(${a.thermostatSetpointStatus||''})</span>`};
+}
+async function loadSchedules(){
+  try{
+    const r=await api("/api/schedules"); const rules=r.schedules||[];
+    document.getElementById("schedCount").textContent=rules.length||"";
+    const list=document.getElementById("ruleList");
+    if(!rules.length){ list.innerHTML=`<div class="empty"><div class="big">No schedule rules</div>
+      Add one below to move zones automatically — night setbacks, weekend modes, holiday setpoints.</div>`; return; }
+    list.innerHTML="";
+    for(const r of rules){ const f=fmtRule(r); const div=document.createElement("div");
+      div.className="rule";
+      div.innerHTML=`<button class="toggle ${r.enabled?'on':''}" onclick="toggleRule('${r.id}',${!r.enabled})"></button>
+        <div class="when">${f.when}</div><div class="what">${f.what}</div>
+        <button class="btn" onclick="delRule('${r.id}')">Delete</button>`;
+      list.appendChild(div); }
+  }catch(e){}
+}
+async function addRule(){
+  const rule={ name:document.getElementById("f-name").value||"Rule",
+    time:document.getElementById("f-time").value, days:[...selDays],
+    targets:document.getElementById("f-target").value,
+    action:{ mode:document.getElementById("f-mode").value,
+      heatSetpoint:Number(document.getElementById("f-heat").value),
+      coolSetpoint:Number(document.getElementById("f-cool").value),
+      thermostatSetpointStatus:document.getElementById("f-hold").value } };
+  try{ await api("/api/schedules",{method:"POST",body:JSON.stringify(rule)});
+    toast("Rule added"); document.getElementById("f-name").value=""; selDays.clear();
+    renderDayPicker(); loadSchedules();
+  }catch(e){ toast("Couldn't add rule: "+e.message,true); }
+}
+async function delRule(id){ try{ await api("/api/schedules/"+id,{method:"DELETE"}); loadSchedules(); }
+  catch(e){ toast(e.message,true); } }
+async function toggleRule(id,en){ try{
+    await api("/api/schedules/"+id+"/enabled",{method:"POST",body:JSON.stringify({enabled:en})});
+    loadSchedules(); }catch(e){ toast(e.message,true); } }
+
+/* ---------- alerts ---------- */
+async function loadAlerts(){
+  try{
+    const r=await api("/api/alerts"); const alerts=r.alerts||[];
+    document.getElementById("alertCount").textContent=alerts.length||"";
+    const list=document.getElementById("alertList");
+    if(!alerts.length){ list.innerHTML=`<div class="empty"><div class="big">All clear</div>
+      Offline zones, temperature excursions, and failed commands will show up here.</div>`; return; }
+    list.innerHTML="";
+    for(const a of alerts){ const div=document.createElement("div");
+      div.className="alert "+(a.severity||"info");
+      div.innerHTML=`<span class="sev">${a.severity||"info"}</span>
+        <span class="msg">${a.message}</span><span class="ts">${ago(a.ts)}</span>`;
+      list.appendChild(div); }
+  }catch(e){}
+}
+
+/* ---------- automations ---------- */
+state.autoStatus = {};
+
+function makePicker(id){
+  const c=document.getElementById(id); if(!c) return;
+  if(!state.devices.length){ c.className="picker empty";
+    c.textContent="No zones yet — connect the account and wait for the first poll."; return; }
+  c.className="picker";
+  c.innerHTML =
+    `<label class="selall"><input type="checkbox" onchange="pickAll('${id}',this.checked)"> All zones</label>`+
+    state.devices.map(d=>`<label class="opt"><input type="checkbox" value="${d.deviceID}"> `+
+      `${d.name}<span class="cid">${d.deviceID}</span></label>`).join("");
+}
+function pickAll(id,on){ document.querySelectorAll(`#${id} .opt input`).forEach(cb=>cb.checked=on); }
+function readPicker(id){
+  const all=document.querySelector(`#${id} .selall input`);
+  if(all&&all.checked) return "all";
+  return [...document.querySelectorAll(`#${id} .opt input:checked`)].map(cb=>cb.value);
+}
+function populatePickers(){ makePicker("g-shed"); makePicker("g-rotate");
+  if(document.getElementById("a-type")) renderActionFields(); }
+
+function tgtName(t){ return t==="all" ? "all zones"
+  : Array.isArray(t) ? (t.length?t.map(deviceName).join(", "):"none") : deviceName(t); }
+
+function matchDesc(tr){
+  const m=tr.match||{}; const subj=m.field?`<i>${m.field}</i>`:"payload";
+  const map={equals:"is",not_equals:"is not",contains:"contains",regex:"matches",gt:">",lt:"<"};
+  if(m.type==="any") return `any message on ${tr.topic}`;
+  return `${subj} ${map[m.type]||m.type} <b>${m.value}</b>`;
+}
+function actionDesc(a){
+  if(a.type==="set") return `Set ${tgtName(a.targets)} → ${valShort(a.values)}`;
+  if(a.type==="rotate") return `Rotate ${tgtName(a.targets)} — ${a.run_count} at a time, every ${a.interval_minutes}m`;
+  if(a.type==="snapshot") return `Snapshot ${tgtName(a.targets)} as “${a.name}”`;
+  if(a.type==="restore") return `Restore “${a.name}”`;
+  if(a.type==="stop_rotation") return `Stop rotation “${a.rotation_id}”`;
+  return a.type;
+}
+function valShort(v){ v=v||{}; const b=[]; if(v.mode)b.push(v.mode);
+  if(v.heatSetpoint!=null)b.push("H"+v.heatSetpoint+"°"); if(v.coolSetpoint!=null)b.push("C"+v.coolSetpoint+"°");
+  return b.join(" ")||"unchanged"; }
+
+async function loadAutomations(){
+  try{
+    const r=await api("/api/automations");
+    const rules=r.automations||[]; state.autoStatus=r.status||{};
+    document.getElementById("autoCount").textContent=rules.length||"";
+
+    // status stripe
+    const strip=document.getElementById("autoStripe"); const bits=[];
+    if(!r.mqtt_enabled) bits.push(`<div class="stat">MQTT disabled — triggers won't fire. Use <b>Run now</b> to test, and set <b>MQTT_ENABLED=true</b> to go live.</div>`);
+    else bits.push(`<div class="stat"><span class="dot ${r.mqtt_connected?'on':'off'}"></span>MQTT ${r.mqtt_connected?'connected':'not connected'}</div>`);
+    (state.autoStatus.rotations||[]).forEach(rot=>{
+      const names=rot.running.map(deviceName).join(", ")||"none";
+      bits.push(`<div class="stat live">↻ <b>${rot.rotation_id}</b>: ${rot.running.length}/${rot.total} running (${names}) · every ${rot.interval_minutes}m</div>`);
+    });
+    Object.entries(state.autoStatus.snapshots||{}).forEach(([n,ids])=>
+      bits.push(`<div class="stat">saved “<b>${n}</b>” · ${ids.length} zone(s)</div>`));
+    strip.innerHTML=bits.join("");
+
+    // rule list
+    const list=document.getElementById("autoList");
+    if(!rules.length){ list.innerHTML=`<div class="empty"><div class="big">No automations yet</div>
+      Set up the generator load-shed above, or build a custom rule.</div>`; return; }
+    list.innerHTML="";
+    for(const rule of rules){ const div=document.createElement("div");
+      div.className="auto-item"+(rule.enabled?"":" disabled");
+      div.innerHTML=`
+        <div class="auto-head">
+          <button class="toggle ${rule.enabled?'on':''}" onclick="toggleAuto('${rule.id}',${!rule.enabled})"></button>
+          <span class="aname">${rule.name||rule.id}</span>
+          <span class="flexspace">
+            <button class="btn" onclick="runAuto('${rule.id}')">Run now</button>
+            <button class="btn" onclick="delAuto('${rule.id}')">Delete</button>
+          </span>
+        </div>
+        <div class="auto-trigger">when ${matchDesc(rule.trigger)}</div>
+        <div class="auto-actions">${(rule.actions||[]).map(a=>`<span class="tag">${a.type}</span>${actionDesc(a)}`).join("<br>")}</div>`;
+      list.appendChild(div); }
+  }catch(e){}
+}
+
+async function toggleAuto(id,en){ try{
+  await api("/api/automations/"+id+"/enabled",{method:"POST",body:JSON.stringify({enabled:en})});
+  loadAutomations(); }catch(e){ toast(e.message,true); } }
+async function delAuto(id){ try{ await api("/api/automations/"+id,{method:"DELETE"}); loadAutomations(); }
+  catch(e){ toast(e.message,true); } }
+async function runAuto(id){ try{ await api("/api/automations/"+id+"/run",{method:"POST"});
+  toast("Ran automation"); setTimeout(loadDevices,1200); setTimeout(loadAutomations,1200);
+  }catch(e){ toast("Couldn't run: "+e.message,true); } }
+
+async function postRule(rule){ return api("/api/automations",{method:"POST",body:JSON.stringify(rule)}); }
+
+async function createGeneratorRules(){
+  const topic=document.getElementById("g-topic").value.trim();
+  const field=document.getElementById("g-field").value.trim()||null;
+  const onVal=document.getElementById("g-on").value.trim();
+  const offVal=document.getElementById("g-off").value.trim();
+  const shed=readPicker("g-shed"), rotate=readPicker("g-rotate");
+  const run=Number(document.getElementById("g-run").value);
+  const interval=Number(document.getElementById("g-int").value);
+  const heat=Number(document.getElementById("g-heat").value);
+  const cool=Number(document.getElementById("g-cool").value);
+  const hasShed=shed==="all"||(Array.isArray(shed)&&shed.length);
+  const hasRot=rotate==="all"||(Array.isArray(rotate)&&rotate.length);
+  if(!topic){ toast("Enter the generator topic",true); return; }
+  if(!hasShed&&!hasRot){ toast("Pick at least one zone to shed or rotate",true); return; }
+
+  let snapTargets="all";
+  if(shed!=="all"&&rotate!=="all") snapTargets=[...new Set([...(Array.isArray(shed)?shed:[]),...(Array.isArray(rotate)?rotate:[])])];
+
+  const onActions=[{type:"snapshot",name:"pre_generator",targets:snapTargets}];
+  if(hasShed) onActions.push({type:"set",targets:shed,values:{mode:"Off"}});
+  if(hasRot) onActions.push({type:"rotate",rotation_id:"generator",targets:rotate,
+    run_count:run,interval_minutes:interval,
+    on_values:{mode:"Heat",heatSetpoint:heat,coolSetpoint:cool,thermostatSetpointStatus:"PermanentHold"},
+    off_values:{mode:"Off"}});
+  const offActions=[]; if(hasRot) offActions.push({type:"stop_rotation",rotation_id:"generator"});
+  offActions.push({type:"restore",name:"pre_generator"});
+
+  const mkMatch=v=>({type:"equals",value:v,field:field,ignore_case:true});
+  try{
+    await postRule({name:"Generator: shed & rotate",enabled:true,
+      trigger:{topic,match:mkMatch(onVal),retrigger:"on_change"},actions:onActions});
+    await postRule({name:"Generator: restore on utility",enabled:true,
+      trigger:{topic,match:mkMatch(offVal),retrigger:"on_change"},actions:offActions});
+    toast("Generator rules created"); loadAutomations();
+  }catch(e){ toast("Couldn't create: "+e.message,true); }
+}
+
+/* ---- custom rule builder ---- */
+let draftActions=[];
+function renderActionFields(){
+  const t=document.getElementById("a-type").value;
+  const d1=document.getElementById("a-dynamic-1"), d2=document.getElementById("a-dynamic-2");
+  d1.innerHTML=""; d2.innerHTML="";
+  const picker=id=>`<label>Zones</label><div class="picker" id="${id}"></div>`;
+  if(t==="set"){
+    d2.innerHTML=picker("a-set-tgt")+
+      `<div class="subgrid" style="margin-top:10px">
+        <div class="fld"><label>Mode</label><select id="a-mode">
+          <option value="">— leave —</option><option>Heat</option><option>Cool</option><option>Auto</option><option>Off</option></select></div>
+        <div class="fld"><label>Hold</label><select id="a-hold">
+          <option value="">— leave —</option><option value="TemporaryHold">Until next schedule</option>
+          <option value="PermanentHold">Permanent</option><option value="NoHold">Resume schedule</option></select></div>
+        <div class="fld"><label>Heat setpoint</label><input id="a-heat" type="number" placeholder="—"></div>
+        <div class="fld"><label>Cool setpoint</label><input id="a-cool" type="number" placeholder="—"></div>
+      </div>`;
+    makePicker("a-set-tgt");
+  } else if(t==="rotate"){
+    d2.innerHTML=picker("a-rot-tgt")+
+      `<div class="subgrid" style="margin-top:10px">
+        <div class="fld"><label>Rotation id</label><input id="a-rid" class="mono" value="group-a"></div>
+        <div class="fld"><label>Run at once</label><input id="a-run" type="number" min="1" value="2"></div>
+        <div class="fld"><label>Interval (min, ≥5)</label><input id="a-int" type="number" min="5" value="15"></div>
+        <div class="fld"><label>Heat setpoint (on)</label><input id="a-onheat" type="number" value="66"></div>
+      </div>`;
+    makePicker("a-rot-tgt");
+  } else if(t==="snapshot"){
+    d1.innerHTML=`<label>Snapshot name</label><input id="a-snap" class="mono" value="saved">`;
+    d2.innerHTML=picker("a-snap-tgt"); makePicker("a-snap-tgt");
+  } else if(t==="restore"){
+    d1.innerHTML=`<label>Snapshot name</label><input id="a-rsnap" class="mono" placeholder="pre_generator">`;
+  } else if(t==="stop_rotation"){
+    d1.innerHTML=`<label>Rotation id</label><input id="a-srid" class="mono" placeholder="generator">`;
+  }
+}
+function addDraftAction(){
+  const t=document.getElementById("a-type").value; let a={type:t};
+  const num=id=>{const v=document.getElementById(id).value; return v===""?null:Number(v);};
+  if(t==="set"){ a.targets=readPicker("a-set-tgt"); const v={};
+    const m=document.getElementById("a-mode").value; if(m)v.mode=m;
+    const h=document.getElementById("a-hold").value; if(h)v.thermostatSetpointStatus=h;
+    const hs=num("a-heat"); if(hs!=null)v.heatSetpoint=hs;
+    const cs=num("a-cool"); if(cs!=null)v.coolSetpoint=cs; a.values=v;
+    if(!a.targets.length&&a.targets!=="all"){ toast("Pick zones for the set action",true); return; } }
+  else if(t==="rotate"){ a.targets=readPicker("a-rot-tgt");
+    a.rotation_id=document.getElementById("a-rid").value.trim();
+    a.run_count=Number(document.getElementById("a-run").value);
+    a.interval_minutes=Number(document.getElementById("a-int").value);
+    a.on_values={mode:"Heat",heatSetpoint:num("a-onheat"),thermostatSetpointStatus:"PermanentHold"};
+    a.off_values={mode:"Off"};
+    if(!a.targets.length&&a.targets!=="all"){ toast("Pick zones for rotation",true); return; } }
+  else if(t==="snapshot"){ a.targets=readPicker("a-snap-tgt"); a.name=document.getElementById("a-snap").value.trim(); }
+  else if(t==="restore"){ a.name=document.getElementById("a-rsnap").value.trim();
+    if(!a.name){ toast("Enter a snapshot name",true); return; } }
+  else if(t==="stop_rotation"){ a.rotation_id=document.getElementById("a-srid").value.trim();
+    if(!a.rotation_id){ toast("Enter a rotation id",true); return; } }
+  draftActions.push(a); renderDraftActions();
+}
+function renderDraftActions(){
+  const c=document.getElementById("c-actions");
+  c.innerHTML=draftActions.map((a,i)=>`<div class="actrow"><span class="tag">${a.type}</span>`+
+    `<span class="body">${actionDesc(a)}</span>`+
+    `<button class="x" onclick="draftActions.splice(${i},1);renderDraftActions()">×</button></div>`).join("")
+    || `<div class="hint" style="margin-bottom:8px">No actions yet — add one below.</div>`;
+}
+async function createCustomRule(){
+  const topic=document.getElementById("c-topic").value.trim();
+  const mtype=document.getElementById("c-mtype").value;
+  if(!topic){ toast("Enter a trigger topic",true); return; }
+  if(!draftActions.length){ toast("Add at least one action",true); return; }
+  const match={type:mtype,ignore_case:true};
+  if(mtype!=="any"){ match.value=document.getElementById("c-mvalue").value.trim(); }
+  const field=document.getElementById("c-field").value.trim(); if(field)match.field=field;
+  const rule={ name:document.getElementById("c-name").value.trim()||"Custom rule", enabled:true,
+    trigger:{topic,match,retrigger:document.getElementById("c-retrig").value}, actions:draftActions };
+  try{ await postRule(rule); toast("Automation created");
+    draftActions=[]; renderDraftActions(); document.getElementById("c-name").value="";
+    loadAutomations();
+  }catch(e){ toast("Couldn't create: "+e.message,true); }
+}
+
+/* ---------- tabs, wiring, polling ---------- */
+document.querySelectorAll("nav.tabs button").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll("nav.tabs button").forEach(x=>x.classList.remove("active"));
+  document.querySelectorAll(".view").forEach(v=>v.classList.remove("active"));
+  b.classList.add("active");
+  document.getElementById("view-"+b.dataset.tab).classList.add("active");
+});
+document.getElementById("refreshBtn").onclick=async()=>{
+  try{ await api("/api/refresh",{method:"POST"}); toast("Refreshing from Honeywell…");
+    setTimeout(()=>{refreshStatus();loadDevices();},1500);
+  }catch(e){ toast(e.message,true); } };
+document.getElementById("addRuleBtn").onclick=addRule;
+document.getElementById("g-create").onclick=createGeneratorRules;
+document.getElementById("a-add").onclick=addDraftAction;
+document.getElementById("c-create").onclick=createCustomRule;
+
+function tick(){ document.getElementById("clock").textContent=
+  new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); }
+
+renderDayPicker(); renderActionFields(); renderDraftActions();
+tick(); setInterval(tick,1000);
+refreshStatus(); loadDevices(); loadSchedules(); loadAlerts(); loadAutomations();
+setInterval(()=>{ refreshStatus(); loadDevices(); loadAlerts(); loadAutomations(); }, 10000);
+setInterval(loadSchedules, 30000);
+</script>
+</body>
+</html>
