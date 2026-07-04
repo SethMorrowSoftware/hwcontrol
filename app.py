@@ -180,8 +180,27 @@ def _emit_events(events: list[dict]) -> None:
                 bridge.publish_alert(alert)
 
 
+def _is_thermostat(device: Any) -> bool:
+    """True for thermostat entries in a /locations `devices` array, which also
+    lists leak detectors and other device classes. Falls back to structural
+    hints when the class field is absent so we never drop a real thermostat."""
+    if not isinstance(device, dict):
+        return False
+    dc = device.get("deviceClass")
+    if isinstance(dc, str):
+        return dc.lower() == "thermostat"
+    return "changeableValues" in device or "indoorTemperature" in device
+
+
 def poll_once() -> None:
-    """One full poll: locations -> per-location thermostats. Location-efficient."""
+    """One full poll of every thermostat across the account.
+
+    The /locations response already embeds each location's devices with full
+    state, so we read thermostats straight from it - a single API call for the
+    whole account instead of one call per location. That keeps us well under
+    Resideo's rate limit (the Basic plan is sized for ~20 devices every 5
+    minutes), which the old per-location fan-out blew past on accounts with
+    several locations, returning 429s and leaving the dashboard empty."""
     if not client.is_authorized:
         return
     try:
@@ -194,18 +213,29 @@ def poll_once() -> None:
         return
 
     all_events: list[dict] = []
+    errors: list[str] = []
     for loc in locations:
         loc_id = loc.get("locationID")
-        # /locations already includes devices, but re-fetching per location via
-        # /devices/thermostats guarantees full, current thermostat state.
-        try:
-            thermostats = client.get_thermostats(loc_id)
-        except HoneywellError as exc:
-            log.error("Poll failed at location %s: %s", loc_id, exc)
-            continue
+        thermostats = [d for d in (loc.get("devices") or []) if _is_thermostat(d)]
+        # Only fall back to a per-location fetch if the location truly carried no
+        # inline devices - otherwise we'd re-introduce the per-location call
+        # volume this whole approach exists to avoid.
+        if not thermostats and "devices" not in loc:
+            try:
+                thermostats = client.get_thermostats(loc_id)
+            except HoneywellError as exc:
+                errors.append(f"location {loc_id}: {exc}")
+                log.error("Poll failed at location %s: %s", loc_id, exc)
+                continue
         all_events.extend(store.ingest(thermostats, loc_id))
 
-    store.mark_poll()
+    # Record an error only when the poll ended up with no devices at all, so a
+    # rate-limited or otherwise-empty poll explains itself in the UI instead of
+    # showing a blank grid with a green "ok" status.
+    if errors and not store.all_device_ids():
+        store.mark_poll(error="; ".join(errors))
+    else:
+        store.mark_poll()
     _publish_all(store.devices())
     _emit_events(all_events)
     log.info("Poll complete: %d device(s), %d change event(s).",

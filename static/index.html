@@ -600,7 +600,7 @@ const TOKEN = new URLSearchParams(location.search).get("token") || "";
 const HDRS = TOKEN ? {"X-Token":TOKEN} : {};
 const qp = TOKEN ? ("?token="+encodeURIComponent(TOKEN)) : "";
 
-const state = { devices:[], pending:{}, autoStatus:{}, loaded:false };
+const state = { devices:[], pending:{}, autoStatus:{}, loaded:false, status:null };
 
 /* ---------- inline icons ---------- */
 const IC = {
@@ -684,12 +684,15 @@ function confirmDialog(msg, okLabel="Delete"){
 async function refreshStatus(){
   try{
     const s = await api("/api/status");
+    state.status = s;
     const a=document.getElementById("authDot"), at=document.getElementById("authText");
     a.className="dot "+(s.authorized?"on":"off");
     at.textContent = s.authorized ? "Connected" : "Not connected";
     document.getElementById("mqttDot").className="dot "+(s.mqtt_connected?"on":"");
     document.getElementById("pollText").textContent =
       "Polled "+ago(s.last_poll_ts)+(s.last_poll_error?" · error":"");
+    // Keep the zones empty state self-diagnosing as status arrives.
+    if(state.loaded && !state.devices.length) renderZones();
     document.getElementById("authBanner").innerHTML = s.authorized ? "" :
       `<div class="banner"><span class="b-ic">${IC.plug}</span><div style="flex:1">
          <div class="b-title">Connect your Honeywell account</div>
@@ -742,10 +745,26 @@ function renderZones(){
   document.getElementById("zoneCount").textContent = state.devices.length||"0";
   if(!state.loaded){ grid.innerHTML=skeletonGrid(); return; }
   if(!state.devices.length){
+    const s=state.status||{};
+    let big="No thermostats yet",
+        lede="Once the account is connected and the first poll runs, your zones appear here.";
+    if(s.authorized===false){
+      big="Account not connected";
+      lede="Connect your Honeywell account with the button above to load your zones.";
+    }else if(s.last_poll_error){
+      const rate=/429|rate/i.test(s.last_poll_error);
+      big=rate?"Rate limited by Honeywell":"Last poll failed";
+      lede=(rate
+        ? "Honeywell's API is temporarily throttling this account. Zones return automatically once the limit clears — no restart needed. "
+        : "")+"Details: "+esc(s.last_poll_error);
+    }else if(s.last_poll_ts){
+      big="No thermostats found";
+      lede="The account is connected and polling succeeded, but no thermostats were returned for it.";
+    }
     grid.innerHTML = `<div class="empty" style="grid-column:1/-1">
       <div class="e-ic">${IC.thermo}</div>
-      <div class="big">No thermostats yet</div>
-      <div class="lede">Once the account is connected and the first poll runs, your zones appear here.</div></div>`;
+      <div class="big">${esc(big)}</div>
+      <div class="lede">${lede}</div></div>`;
     return;
   }
   grid.innerHTML="";
