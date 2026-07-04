@@ -7,9 +7,18 @@ import os
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()
 except ImportError:
-    pass
+    load_dotenv = None
+
+if load_dotenv is not None:
+    try:
+        load_dotenv()
+    except OSError:
+        # .env exists but isn't readable as this user - e.g. running as a service
+        # account while .env is owned by another user. Not fatal: values are also
+        # supplied via the process environment (systemd EnvironmentFile), so we
+        # just skip loading the file rather than crashing at import.
+        pass
 
 log = logging.getLogger("honeywell.config")
 

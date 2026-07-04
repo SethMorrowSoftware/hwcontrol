@@ -222,6 +222,14 @@ if want_service; then
   # common case of the repo living under a 0750 home directory).
   ensure_service_access "$SERVICE_USER"
 
+  # Let the service account read .env (config.py loads it directly, in addition
+  # to systemd's EnvironmentFile). Owner keeps write; group gets read; not world.
+  if [ -f "$SCRIPT_DIR/.env" ]; then
+    chown "$(stat -c '%U' "$SCRIPT_DIR"):$SERVICE_GROUP" "$SCRIPT_DIR/.env" 2>/dev/null \
+      || chgrp "$SERVICE_GROUP" "$SCRIPT_DIR/.env" 2>/dev/null || true
+    chmod 640 "$SCRIPT_DIR/.env"
+  fi
+
   # We deliberately do NOT chown the repo. The code stays owned by whoever cloned
   # it, so `git pull` keeps working. The service instead runs from a private state
   # directory (/var/lib/<name>, created and owned by systemd) and imports the code
