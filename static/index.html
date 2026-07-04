@@ -355,6 +355,10 @@ function ago(ts){ if(!ts) return "never";
   const s=Math.floor(Date.now()/1000-ts);
   if(s<60) return s+"s ago"; if(s<3600) return Math.floor(s/60)+"m ago";
   return Math.floor(s/3600)+"h ago"; }
+// Escape any value that came from a thermostat name, an alert message, or a
+// rule/topic the operator typed, before it goes into innerHTML.
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,
+  c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
 /* ---------- status + header ---------- */
 async function refreshStatus(){
@@ -426,7 +430,7 @@ function renderZones(){
     const out = d.outdoorTemperature!=null?("out "+Math.round(d.outdoorTemperature)+"°"):"";
     card.innerHTML = `
       <div class="chead">
-        <div><div class="cname">${d.name}</div><div class="cid">${d.deviceID}</div></div>
+        <div><div class="cname">${esc(d.name)}</div><div class="cid">${esc(d.deviceID)}</div></div>
         <div class="status"><span class="dot ${d.online?'on':'off'}"></span>${d.online?'online':'OFFLINE'}</div>
       </div>
       <div class="readout">
@@ -486,17 +490,17 @@ function renderDayPicker(){
 function populateTargets(){
   const sel=document.getElementById("f-target"); const cur=sel.value;
   sel.innerHTML='<option value="all">All zones</option>'+
-    state.devices.map(d=>`<option value="${d.deviceID}">${d.name}</option>`).join("");
+    state.devices.map(d=>`<option value="${esc(d.deviceID)}">${esc(d.name)}</option>`).join("");
   sel.value=cur;
 }
 function fmtRule(r){
   const days=r.days&&r.days.length?r.days.join(" ").toUpperCase():"every day";
   const tgt=r.targets==="all"?"all zones":(Array.isArray(r.targets)?r.targets.map(deviceName).join(", "):deviceName(r.targets));
   const a=r.action||{};
-  return {when:`${r.time} · ${days}`,
-    what:`<span class="rname">${r.name||r.id}</span> — ${tgt}: ${a.mode||''} `+
-         `${a.heatSetpoint!=null?'H'+a.heatSetpoint+'°':''} ${a.coolSetpoint!=null?'C'+a.coolSetpoint+'°':''} `+
-         `<span class="hint">(${a.thermostatSetpointStatus||''})</span>`};
+  return {when:`${esc(r.time)} · ${esc(days)}`,
+    what:`<span class="rname">${esc(r.name||r.id)}</span> — ${esc(tgt)}: ${esc(a.mode||'')} `+
+         `${a.heatSetpoint!=null?'H'+esc(a.heatSetpoint)+'°':''} ${a.coolSetpoint!=null?'C'+esc(a.coolSetpoint)+'°':''} `+
+         `<span class="hint">(${esc(a.thermostatSetpointStatus||'')})</span>`};
 }
 async function loadSchedules(){
   try{
@@ -544,8 +548,8 @@ async function loadAlerts(){
     list.innerHTML="";
     for(const a of alerts){ const div=document.createElement("div");
       div.className="alert "+(a.severity||"info");
-      div.innerHTML=`<span class="sev">${a.severity||"info"}</span>
-        <span class="msg">${a.message}</span><span class="ts">${ago(a.ts)}</span>`;
+      div.innerHTML=`<span class="sev">${esc(a.severity||"info")}</span>
+        <span class="msg">${esc(a.message)}</span><span class="ts">${ago(a.ts)}</span>`;
       list.appendChild(div); }
   }catch(e){}
 }
@@ -560,8 +564,8 @@ function makePicker(id){
   c.className="picker";
   c.innerHTML =
     `<label class="selall"><input type="checkbox" onchange="pickAll('${id}',this.checked)"> All zones</label>`+
-    state.devices.map(d=>`<label class="opt"><input type="checkbox" value="${d.deviceID}"> `+
-      `${d.name}<span class="cid">${d.deviceID}</span></label>`).join("");
+    state.devices.map(d=>`<label class="opt"><input type="checkbox" value="${esc(d.deviceID)}"> `+
+      `${esc(d.name)}<span class="cid">${esc(d.deviceID)}</span></label>`).join("");
 }
 function pickAll(id,on){ document.querySelectorAll(`#${id} .opt input`).forEach(cb=>cb.checked=on); }
 function readPicker(id){
@@ -576,18 +580,18 @@ function tgtName(t){ return t==="all" ? "all zones"
   : Array.isArray(t) ? (t.length?t.map(deviceName).join(", "):"none") : deviceName(t); }
 
 function matchDesc(tr){
-  const m=tr.match||{}; const subj=m.field?`<i>${m.field}</i>`:"payload";
+  const m=tr.match||{}; const subj=m.field?`<i>${esc(m.field)}</i>`:"payload";
   const map={equals:"is",not_equals:"is not",contains:"contains",regex:"matches",gt:">",lt:"<"};
-  if(m.type==="any") return `any message on ${tr.topic}`;
-  return `${subj} ${map[m.type]||m.type} <b>${m.value}</b>`;
+  if(m.type==="any") return `any message on ${esc(tr.topic)}`;
+  return `${subj} ${map[m.type]||esc(m.type)} <b>${esc(m.value)}</b>`;
 }
 function actionDesc(a){
-  if(a.type==="set") return `Set ${tgtName(a.targets)} → ${valShort(a.values)}`;
-  if(a.type==="rotate") return `Rotate ${tgtName(a.targets)} — ${a.run_count} at a time, every ${a.interval_minutes}m`;
-  if(a.type==="snapshot") return `Snapshot ${tgtName(a.targets)} as “${a.name}”`;
-  if(a.type==="restore") return `Restore “${a.name}”`;
-  if(a.type==="stop_rotation") return `Stop rotation “${a.rotation_id}”`;
-  return a.type;
+  if(a.type==="set") return `Set ${esc(tgtName(a.targets))} → ${esc(valShort(a.values))}`;
+  if(a.type==="rotate") return `Rotate ${esc(tgtName(a.targets))} — ${esc(a.run_count)} at a time, every ${esc(a.interval_minutes)}m`;
+  if(a.type==="snapshot") return `Snapshot ${esc(tgtName(a.targets))} as “${esc(a.name)}”`;
+  if(a.type==="restore") return `Restore “${esc(a.name)}”`;
+  if(a.type==="stop_rotation") return `Stop rotation “${esc(a.rotation_id)}”`;
+  return esc(a.type);
 }
 function valShort(v){ v=v||{}; const b=[]; if(v.mode)b.push(v.mode);
   if(v.heatSetpoint!=null)b.push("H"+v.heatSetpoint+"°"); if(v.coolSetpoint!=null)b.push("C"+v.coolSetpoint+"°");
@@ -604,11 +608,11 @@ async function loadAutomations(){
     if(!r.mqtt_enabled) bits.push(`<div class="stat">MQTT disabled — triggers won't fire. Use <b>Run now</b> to test, and set <b>MQTT_ENABLED=true</b> to go live.</div>`);
     else bits.push(`<div class="stat"><span class="dot ${r.mqtt_connected?'on':'off'}"></span>MQTT ${r.mqtt_connected?'connected':'not connected'}</div>`);
     (state.autoStatus.rotations||[]).forEach(rot=>{
-      const names=rot.running.map(deviceName).join(", ")||"none";
-      bits.push(`<div class="stat live">↻ <b>${rot.rotation_id}</b>: ${rot.running.length}/${rot.total} running (${names}) · every ${rot.interval_minutes}m</div>`);
+      const names=rot.running.map(deviceName).map(esc).join(", ")||"none";
+      bits.push(`<div class="stat live">↻ <b>${esc(rot.rotation_id)}</b>: ${rot.running.length}/${rot.total} running (${names}) · every ${esc(rot.interval_minutes)}m</div>`);
     });
     Object.entries(state.autoStatus.snapshots||{}).forEach(([n,ids])=>
-      bits.push(`<div class="stat">saved “<b>${n}</b>” · ${ids.length} zone(s)</div>`));
+      bits.push(`<div class="stat">saved “<b>${esc(n)}</b>” · ${ids.length} zone(s)</div>`));
     strip.innerHTML=bits.join("");
 
     // rule list
@@ -621,14 +625,14 @@ async function loadAutomations(){
       div.innerHTML=`
         <div class="auto-head">
           <button class="toggle ${rule.enabled?'on':''}" onclick="toggleAuto('${rule.id}',${!rule.enabled})"></button>
-          <span class="aname">${rule.name||rule.id}</span>
+          <span class="aname">${esc(rule.name||rule.id)}</span>
           <span class="flexspace">
             <button class="btn" onclick="runAuto('${rule.id}')">Run now</button>
             <button class="btn" onclick="delAuto('${rule.id}')">Delete</button>
           </span>
         </div>
-        <div class="auto-trigger">when ${matchDesc(rule.trigger)}</div>
-        <div class="auto-actions">${(rule.actions||[]).map(a=>`<span class="tag">${a.type}</span>${actionDesc(a)}`).join("<br>")}</div>`;
+        <div class="auto-trigger">when ${matchDesc(rule.trigger||{})}</div>
+        <div class="auto-actions">${(rule.actions||[]).map(a=>`<span class="tag">${esc(a.type)}</span>${actionDesc(a)}`).join("<br>")}</div>`;
       list.appendChild(div); }
   }catch(e){}
 }
@@ -743,7 +747,7 @@ function addDraftAction(){
 }
 function renderDraftActions(){
   const c=document.getElementById("c-actions");
-  c.innerHTML=draftActions.map((a,i)=>`<div class="actrow"><span class="tag">${a.type}</span>`+
+  c.innerHTML=draftActions.map((a,i)=>`<div class="actrow"><span class="tag">${esc(a.type)}</span>`+
     `<span class="body">${actionDesc(a)}</span>`+
     `<button class="x" onclick="draftActions.splice(${i},1);renderDraftActions()">×</button></div>`).join("")
     || `<div class="hint" style="margin-bottom:8px">No actions yet — add one below.</div>`;

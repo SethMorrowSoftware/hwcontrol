@@ -112,13 +112,17 @@ class FacilityScheduler:
     # ------------------------------------------------------------- internals
 
     def _validate(self, rule: dict) -> None:
-        if "time" not in rule or ":" not in str(rule["time"]):
-            raise ValueError("rule.time must be 'HH:MM'")
+        parts = str(rule.get("time", "")).split(":")
+        if len(parts) != 2 or not (parts[0].isdigit() and parts[1].isdigit()):
+            raise ValueError("rule.time must be 'HH:MM' (24-hour)")
+        hour, minute = int(parts[0]), int(parts[1])
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError("rule.time hour must be 0-23 and minute 0-59")
         if "action" not in rule or not isinstance(rule["action"], dict):
             raise ValueError("rule.action must be an object")
         days = rule.get("days")
         if days:
-            bad = [d for d in days if d.lower() not in _DAY_MAP]
+            bad = [d for d in days if str(d).lower() not in _DAY_MAP]
             if bad:
                 raise ValueError(f"invalid days: {bad}")
 

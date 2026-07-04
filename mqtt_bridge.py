@@ -71,7 +71,14 @@ class MqttBridge:
         self._trigger_topics: set[str] = set()
         self._connected = False
 
-        self._client = mqtt.Client(client_id=f"{self.base}-bridge")
+        # paho-mqtt 2.x requires an explicit callback API version; 1.x doesn't
+        # know the argument. Pin to the v1 callback signatures either way so the
+        # on_connect/on_message handlers below work on both major versions.
+        client_id = f"{self.base}-bridge"
+        if hasattr(mqtt, "CallbackAPIVersion"):
+            self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id=client_id)
+        else:
+            self._client = mqtt.Client(client_id=client_id)
         if username:
             self._client.username_pw_set(username, password)
         self._client.on_connect = self._on_connect
@@ -150,16 +157,20 @@ class MqttBridge:
         if not msg.topic.startswith(self.base + "/"):
             return
         try:
-            parts = msg.topic.split("/")
-            # base / <deviceID> / set [ / <field> ]
-            device_id = parts[1]
+            # Strip the (possibly multi-segment) base, leaving:
+            #   <deviceID> / set [ / <field> ]
+            base_len = len(self.base.split("/"))
+            rest = msg.topic.split("/")[base_len:]
+            if len(rest) < 2:
+                return
+            device_id = rest[0]
             payload = msg.payload.decode().strip()
             command: dict
 
-            if parts[-1] == "set":  # full JSON command
+            if rest[-1] == "set":  # full JSON command
                 command = json.loads(payload) if payload else {}
             else:
-                field = parts[-1]
+                field = rest[-1]
                 if field == "heat":
                     command = {"heatSetpoint": float(payload),
                                "thermostatSetpointStatus": "TemporaryHold"}
