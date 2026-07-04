@@ -192,6 +192,11 @@
   .meta{font-size:12px;color:var(--muted);text-align:right;line-height:1.7}
   .meta .m{display:inline-flex;align-items:center;gap:5px;justify-content:flex-end}
   .meta svg{width:13px;height:13px;opacity:.75}
+  /* "Who is controlling this zone" chip. */
+  .meta .m.src{font-weight:600;cursor:help}
+  .meta .m.src-app{color:var(--ok)}
+  .meta .m.src-temp{color:var(--accent)}
+  .meta .m.src-onboard{color:var(--warn)}
 
   .modes{display:flex;gap:0;margin-bottom:14px;background:var(--inset);border:1px solid var(--border);
     border-radius:var(--r-sm);padding:3px}
@@ -750,6 +755,26 @@ function modeClass(d){ if(!d.online) return "offline";
   const m=(d.mode||"").toLowerCase();
   return m==="heat"?"mode-heat":m==="cool"?"mode-cool":m==="auto"?"mode-auto":""; }
 
+/* What is actually driving this zone's setpoints right now: the app (a hold it
+   owns) or the thermostat's own onboard/Resideo schedule. Derived from the hold
+   status the app authoritatively sets - clearer and more reliable than Resideo's
+   raw scheduleStatus ("Pause"/"Resume"), which the app neither sets nor controls. */
+function controlSource(d){
+  const s = d.setpointStatus;
+  if(s==="PermanentHold") return {t:"App control", cls:"src-app",
+    tip:"The app owns this zone (permanent hold). Its schedules and automations drive the setpoints; the thermostat's onboard/Resideo schedule is suspended."};
+  if(s==="TemporaryHold") return {t:"App hold (temp)", cls:"src-temp",
+    tip:"A temporary app hold is active until the next schedule period, then the onboard/Resideo schedule resumes."};
+  if(s==="HoldUntil") return {t:"App hold (timed)", cls:"src-temp",
+    tip:"A timed app hold is active until a set time, then the onboard/Resideo schedule resumes."};
+  if(s==="NoHold") return {t:"Resideo schedule", cls:"src-onboard",
+    tip:"This zone is following its own onboard/Resideo 7-day schedule — the app is not holding it. With Sole Controller on, the next poll takes it back under app control."};
+  // Hold status not reported: fall back to the raw Resideo scheduleStatus if present.
+  if(d.scheduleStatus) return {t:"Sched: "+d.scheduleStatus, cls:"",
+    tip:"Thermostat-reported scheduleStatus (hold status unavailable)."};
+  return null;
+}
+
 /* Track dirtiness PER FIELD (a Set of "mode"/"heat"/"cool"/"hold"). On each poll we
    refresh every field the operator has NOT edited from the live device, and pin only
    the fields they actually touched — so a background change to an untouched field
@@ -842,7 +867,8 @@ function renderZones(){
     const meta=[];
     if(d.indoorHumidity!=null) meta.push(`<span class="m">${IC.droplet}${d.indoorHumidity}%</span>`);
     if(d.outdoorTemperature!=null) meta.push(`<span class="m">${IC.thermo}${Math.round(d.outdoorTemperature)}° out</span>`);
-    if(d.scheduleStatus) meta.push(`<span class="m">${esc(d.scheduleStatus)}</span>`);
+    const src = controlSource(d);
+    if(src) meta.push(`<span class="m src ${src.cls}" title="${esc(src.tip)}">${esc(src.t)}</span>`);
     card.innerHTML = `
       <div class="chead">
         <div><div class="cname">${esc(d.name)}</div><div class="cid">${esc(d.deviceID)}${state.devicesTs?` · <span class="stale" data-since="${state.devicesTs}">as of ${esc(ago(state.devicesTs))}</span>`:''}</div></div>
