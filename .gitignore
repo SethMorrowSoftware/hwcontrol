@@ -1,0 +1,28 @@
+# --- Secrets & runtime state (never commit these) ---
+.env
+tokens.json
+schedules.json
+automations.json
+snapshots.json
+rotations.json
+trigger_state.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/

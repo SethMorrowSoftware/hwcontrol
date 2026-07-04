@@ -65,6 +65,7 @@ import json
 import logging
 import re
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -96,6 +97,7 @@ class AutomationEngine:
         rules_path: str = "automations.json",
         snapshots_path: str = "snapshots.json",
         trigger_state_path: str = "trigger_state.json",
+        rotations_path: str = "rotations.json",
         on_topics_changed: Optional[Callable[[], None]] = None,
     ):
         self.apply_fn = apply_fn
@@ -107,6 +109,7 @@ class AutomationEngine:
         self.rules_path = Path(rules_path)
         self.snapshots_path = Path(snapshots_path)
         self.trigger_state_path = Path(trigger_state_path)
+        self.rotations_path = Path(rotations_path)
 
         self._lock = threading.Lock()
         self._rules: dict[str, dict] = {}
@@ -122,6 +125,7 @@ class AutomationEngine:
 
     def start(self) -> None:
         self._sched.start()
+        self._resume_rotations()
         log.info("Automation engine started with %d rule(s).", len(self._rules))
 
     def stop(self) -> None:
@@ -242,7 +246,6 @@ class AutomationEngine:
             if prev is not None and prev[0] and prev[1] == value:
                 return
 
-        import time
         self._last_fired[rid] = time.time()
         log.info("Automation '%s' triggered (payload=%r).", rid, payload[:80])
         self._run_actions(rule)
@@ -393,7 +396,7 @@ class AutomationEngine:
                 "on_values": on_values, "off_values": off_values,
                 "index": 0, "current_on": set(), "job_id": f"rotation:{rid}",
             }
-        # First tick now, then every interval.
+        # First tick now (also persists state), then every interval.
         self._rotation_tick(rid)
         self._sched.add_job(
             self._rotation_tick, IntervalTrigger(minutes=interval),
@@ -428,11 +431,29 @@ class AutomationEngine:
             self.apply_fn(did, dict(off_values))
         if turn_on or turn_off:
             log.info("Rotation '%s': on=%s off=%s", rid, sorted(turn_on), sorted(turn_off))
+        # Persist the advanced window/index so a restart resumes where we left off.
+        self._save_rotations()
+
+    def _resume_rotations(self) -> None:
+        """Re-arm interval jobs for rotations that were active before a restart.
+        Zones are already in their last-applied state, so we do NOT tick
+        immediately - we just keep advancing the window on schedule. The paired
+        'restore on utility' rule still stops the rotation when power returns."""
+        with self._lock:
+            items = list(self._rotations.items())
+        for rid, st in items:
+            self._sched.add_job(
+                self._rotation_tick, IntervalTrigger(minutes=st["interval"]),
+                args=[rid], id=f"rotation:{rid}", replace_existing=True,
+            )
+            log.info("Resumed rotation '%s' (every %dm, %d/%d running).",
+                     rid, st["interval"], len(st["current_on"]), len(st["targets"]))
 
     def _stop_rotation(self, rid: str) -> None:
         self._cancel_rotation_job(rid)
         with self._lock:
             self._rotations.pop(rid, None)
+        self._save_rotations()
 
     def _cancel_rotation_job(self, rid: str) -> None:
         try:
@@ -477,6 +498,16 @@ class AutomationEngine:
                 self._last_match = {k: (v[0], v[1]) for k, v in raw.items()}
             except (OSError, ValueError, IndexError) as exc:
                 log.warning("Could not load trigger state: %s", exc)
+        if self.rotations_path.exists():
+            try:
+                raw = json.loads(self.rotations_path.read_text())
+                for rid, st in raw.items():
+                    st["current_on"] = set(st.get("current_on", []))
+                    self._rotations[rid] = st
+                if self._rotations:
+                    log.info("Loaded %d active rotation(s) to resume.", len(self._rotations))
+            except (OSError, ValueError) as exc:
+                log.warning("Could not load rotations: %s", exc)
 
     def _save_trigger_state(self) -> None:
         try:
@@ -496,3 +527,17 @@ class AutomationEngine:
             self.snapshots_path.write_text(json.dumps(self._snapshots, indent=2))
         except OSError as exc:  # pragma: no cover
             log.error("Could not save snapshots: %s", exc)
+
+    def _save_rotations(self) -> None:
+        """Persist active rotations so they resume across a restart. Sets are
+        serialized as sorted lists and rehydrated in _load()."""
+        try:
+            with self._lock:
+                data = {}
+                for rid, st in self._rotations.items():
+                    d = dict(st)
+                    d["current_on"] = sorted(st["current_on"])
+                    data[rid] = d
+            self.rotations_path.write_text(json.dumps(data, indent=2))
+        except OSError as exc:  # pragma: no cover
+            log.error("Could not save rotations: %s", exc)

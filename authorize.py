@@ -2,8 +2,8 @@
 authorize.py
 ------------
 A tiny standalone helper to complete the OAuth login and sanity-check your
-credentials WITHOUT the web server. Handy for first-time setup or debugging the
-exact error the original script hit.
+credentials WITHOUT the web server. Handy for first-time setup or for debugging
+the "redirect URL does not match" error in isolation.
 
 Usage:
     python authorize.py

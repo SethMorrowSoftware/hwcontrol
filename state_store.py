@@ -54,6 +54,7 @@ class StateStore:
         self._devices: dict[str, dict] = {}          # deviceID -> normalized state
         self._location_of: dict[str, Any] = {}       # deviceID -> locationId
         self._alerts: deque[dict] = deque(maxlen=maxlen_alerts)
+        self._temp_zone: dict[str, str] = {}         # deviceID -> "ok" | "high" | "low"
         self.last_poll_ts: Optional[float] = None
         self.last_poll_error: Optional[str] = None
         # Alert thresholds (edit or drive from config). None disables that check.
@@ -76,8 +77,9 @@ class StateStore:
                 old = self._devices.get(did)
                 self._devices[did] = new
                 events.extend(self._diff(old, new))
+                self._check_temp_alert(did, new)
         for ev in events:
-            self._record_alert_if_needed(ev)
+            self._maybe_online_alert(ev)
         return events
 
     def _diff(self, old: Optional[dict], new: dict) -> list[dict]:
@@ -96,27 +98,48 @@ class StateStore:
                 })
         return out
 
-    def _record_alert_if_needed(self, ev: dict) -> None:
-        """Turn certain change events into human-facing alerts."""
-        alert = None
-        if ev.get("field") == "online":
-            if ev["new"] is False:
-                alert = {"severity": "critical", "kind": "offline",
-                         "message": f"{ev['name']} went offline"}
-            else:
-                alert = {"severity": "info", "kind": "online",
-                         "message": f"{ev['name']} is back online"}
-        elif ev.get("field") == "indoorTemperature" and ev["new"] is not None:
-            t = ev["new"]
-            if self.temp_high_alert is not None and t >= self.temp_high_alert:
-                alert = {"severity": "warning", "kind": "temp_high",
-                         "message": f"{ev['name']} is {t}\u00b0 (above {self.temp_high_alert}\u00b0)"}
-            elif self.temp_low_alert is not None and t <= self.temp_low_alert:
-                alert = {"severity": "warning", "kind": "temp_low",
-                         "message": f"{ev['name']} is {t}\u00b0 (below {self.temp_low_alert}\u00b0)"}
-        if alert:
-            alert.update({"deviceID": ev["deviceID"], "ts": ev["ts"]})
+    def _maybe_online_alert(self, ev: dict) -> None:
+        """Turn an online/offline change event into a human-facing alert.
+        Edge-triggered by _diff, so it fires exactly once per transition."""
+        if ev.get("field") != "online":
+            return
+        if ev["new"] is False:
+            alert = {"severity": "critical", "kind": "offline",
+                     "message": f"{ev['name']} went offline"}
+        else:
+            alert = {"severity": "info", "kind": "online",
+                     "message": f"{ev['name']} is back online"}
+        alert.update({"deviceID": ev["deviceID"], "ts": ev["ts"]})
+        with self._lock:
             self._alerts.appendleft(alert)
+
+    def _check_temp_alert(self, device_id: str, new: dict) -> None:
+        """Alert once when a zone crosses INTO an out-of-range band, and re-arm
+        when it returns to normal. Called while holding self._lock.
+
+        This is deliberately edge-triggered on the range band (ok/high/low): a
+        zone that sits at 90 degrees raises one alert, not one on every poll."""
+        t = new.get("indoorTemperature")
+        if t is None:
+            return
+        zone = "ok"
+        if self.temp_high_alert is not None and t >= self.temp_high_alert:
+            zone = "high"
+        elif self.temp_low_alert is not None and t <= self.temp_low_alert:
+            zone = "low"
+
+        prev = self._temp_zone.get(device_id, "ok")
+        self._temp_zone[device_id] = zone
+        if zone == prev or zone == "ok":
+            return
+
+        name = new.get("name") or device_id
+        if zone == "high":
+            msg = f"{name} is {t}\u00b0 (above {self.temp_high_alert}\u00b0)"
+        else:
+            msg = f"{name} is {t}\u00b0 (below {self.temp_low_alert}\u00b0)"
+        self._alerts.appendleft({"severity": "warning", "kind": "temp_" + zone,
+                                 "message": msg, "deviceID": device_id, "ts": time.time()})
 
     def add_alert(self, severity: str, kind: str, message: str, device_id: str = "") -> dict:
         alert = {"severity": severity, "kind": kind, "message": message,

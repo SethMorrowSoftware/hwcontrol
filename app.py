@@ -20,11 +20,13 @@ a "Connect account" button that kicks off the OAuth flow.
 from __future__ import annotations
 
 import logging
+import secrets
 import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -263,8 +265,9 @@ async def token_gate(request: Request, call_next):
     if Config.DASHBOARD_TOKEN:
         # Allow the OAuth callback through (Honeywell can't send our header).
         if not request.url.path.startswith("/auth/callback"):
-            supplied = request.headers.get("X-Token") or request.query_params.get("token")
-            if supplied != Config.DASHBOARD_TOKEN:
+            supplied = request.headers.get("X-Token") or request.query_params.get("token") or ""
+            # Constant-time comparison so the token can't be guessed by timing.
+            if not secrets.compare_digest(supplied, Config.DASHBOARD_TOKEN):
                 return JSONResponse({"error": "unauthorized"}, status_code=401)
     return await call_next(request)
 
@@ -288,7 +291,10 @@ def auth_callback(code: Optional[str] = None, error: Optional[str] = None):
         return HTMLResponse(f"<h3>Token exchange failed:</h3><pre>{exc}</pre>", status_code=400)
     # Kick off an immediate poll in the background so data shows up fast.
     threading.Thread(target=poll_once, daemon=True).start()
-    return RedirectResponse("/")
+    # Carry the dashboard token through the redirect; otherwise the gate would
+    # 401 the bare "/" the user lands on right after connecting their account.
+    dest = "/?token=" + quote(Config.DASHBOARD_TOKEN) if Config.DASHBOARD_TOKEN else "/"
+    return RedirectResponse(dest)
 
 
 # --------------------------------------------------------------------- API

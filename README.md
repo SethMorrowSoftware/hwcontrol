@@ -17,18 +17,18 @@ Resideo API:
 
 ---
 
-## ⚠️ Read this first: rotate your API credentials
+## ⚠️ Read this first: protect your API credentials
 
-The Honeywell API key/secret pair that was pasted into our earlier chat should be
-considered **compromised**. Before deploying this (or anything else) with those
-credentials:
+Your Honeywell API key/secret pair is a password. If it has ever been pasted
+into a chat, screenshot, ticket, or committed to git, treat it as **compromised**
+and rotate it before deploying:
 
 1. Go to <https://developer.honeywellhome.com> → **My Apps** → your app.
 2. Regenerate the secret (or delete and recreate the app).
-3. Put the **new** key/secret in your `.env` (never commit `.env` to git).
+3. Put the **new** key/secret in your `.env`.
 
-Anything pasted into a chat, screenshot, or ticket can leak. Treat those secrets
-like a password that's already been posted publicly.
+Never commit `.env` or `tokens.json` — both hold secrets and are already listed
+in `.gitignore`. Anything pasted into a chat, screenshot, or ticket can leak.
 
 ---
 
@@ -46,9 +46,10 @@ to Resideo faster than the poll interval, so a state change on a thermostat beco
 visible within one poll cycle, not instantly.
 
 **The rate limits are tight.** The Resideo "Basic" developer plan is sized roughly
-for **polling ~20 devices every 5 minutes**. This app is built around that: it polls
-**once per location** (one API call returns every thermostat at that location) and
-has a client-side rate limiter as a safety net. If you have more than ~20 devices or
+for **polling ~20 devices every 5 minutes**. This app is built around that: each
+poll fetches your locations once, then **one call per location** returns every
+thermostat there — and a client-side rate limiter (minimum spacing + rolling
+hourly cap) sits underneath as a safety net. If you have more than ~20 devices or
 want faster polling, email **developerinfo@resideo.com** to request a higher limit,
 then lower `POLL_INTERVAL_SECONDS`. Automations and rotations also issue control
 calls, so keep rotation intervals sane (the app enforces a 5-minute minimum, which
@@ -73,9 +74,13 @@ python authorize.py          # CLI: opens the consent flow, saves tokens.json
 #   ...or just start the server and click "Connect Honeywell" in the dashboard.
 
 # 4. Run
-python -m uvicorn app:app --host 0.0.0.0 --port 8000
-#   open http://localhost:8000
+python -m uvicorn app:app --host 0.0.0.0 --port 8010
+#   open http://localhost:8010
 ```
+
+> **Port 8010, not 8000.** The default is 8010 so this can share a host with the
+> GenWatch generator monitor (which listens on 8000). See
+> [Running alongside other services](#running-alongside-other-services) below.
 
 Tokens are stored in `tokens.json` (chmod 600). Resideo **rotates the refresh
 token on every refresh**, and this app persists the new one automatically — so you
@@ -83,14 +88,17 @@ only authorize once, and it keeps working as long as the app can write that file
 
 ### The "redirect URL does not match" error
 
-This is the single most common setup problem (it's what tripped up the original
-script). The `HONEYWELL_REDIRECT_URI` in your `.env` must be **byte-for-byte
-identical** to the Redirect URI registered on the developer portal — same scheme
-(`http`/`https`), same host, same port, same path, no trailing slash difference.
+This is the single most common setup problem. The `HONEYWELL_REDIRECT_URI` in
+your `.env` must be **byte-for-byte identical** to the Redirect URI registered on
+the developer portal — same scheme (`http`/`https`), same host, same port, same
+path, no trailing slash difference.
 
-- Portal has `http://localhost:8000/auth/callback` → `.env` must be exactly that.
-- `http://localhost:8000/auth/callback` ≠ `http://localhost:8000/auth/callback/`
-- `http://127.0.0.1:8000/...` ≠ `http://localhost:8000/...`
+- Portal has `http://localhost:8010/auth/callback` → `.env` must be exactly that.
+- `http://localhost:8010/auth/callback` ≠ `http://localhost:8010/auth/callback/`
+- `http://127.0.0.1:8010/...` ≠ `http://localhost:8010/...`
+
+If you run the app on a different port, register a redirect URI with that port
+and set `HONEYWELL_REDIRECT_URI` to match.
 
 If you change one, change the other to match.
 
@@ -155,10 +163,12 @@ executes the actions immediately, ignoring the trigger — it works even if MQTT
 disabled). To go live, make sure `MQTT_ENABLED=true` and the broker is connected
 (the status strip shows this).
 
-**Restart-safe.** Snapshots and the trigger's last-seen state are persisted, so if
-the app restarts mid-outage: a *retained* "on" message replayed by the broker will
-**not** re-fire the shed rule or clobber the good snapshot, and the genuine
-transition to "off" still triggers the restore.
+**Restart-safe.** Snapshots, the trigger's last-seen state, and any active
+rotation are all persisted, so if the app restarts mid-outage: the running
+rotation resumes on its schedule, a *retained* "on" message replayed by the
+broker will **not** re-fire the shed rule or clobber the good snapshot, and the
+genuine transition to "off" still stops the rotation and triggers the restore.
+(For this to work across a restart, publish the generator status **retained**.)
 
 ---
 
@@ -304,31 +314,61 @@ Synchronous, thread-based, and deliberately boring for reliability:
 
 `tokens.json` (OAuth tokens), `schedules.json`, `automations.json`,
 `snapshots.json` (saved zone states for restore), `trigger_state.json` (last-seen
-trigger values, for restart-safe edge detection).
+trigger values, for restart-safe edge detection), `rotations.json` (active
+duty-cycle rotations, so they resume after a restart).
 
 ---
 
 ## Running as a service (systemd example)
 
 ```ini
-# /etc/systemd/system/thermostat-dashboard.service
+# /etc/systemd/system/hwcontrol.service
 [Unit]
-Description=Facility Thermostat Dashboard
+Description=Facility Thermostat Dashboard (hwcontrol)
 After=network-online.target
+Wants=network-online.target
 
 [Service]
-WorkingDirectory=/opt/thermostat-dashboard
-EnvironmentFile=/opt/thermostat-dashboard/.env
-ExecStart=/opt/thermostat-dashboard/.venv/bin/uvicorn app:app --host 0.0.0.0 --port 8000
+WorkingDirectory=/opt/hwcontrol
+EnvironmentFile=/opt/hwcontrol/.env
+ExecStart=/opt/hwcontrol/.venv/bin/uvicorn app:app --host 0.0.0.0 --port 8010
 Restart=on-failure
-User=thermostat
+RestartSec=5
+User=hwcontrol
+Group=hwcontrol
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-The working directory must be writable (it's where `tokens.json` and the other
-runtime files live).
+The working directory must be writable by the service user — it's where
+`tokens.json` and the other runtime files live.
+
+> **Note on `EnvironmentFile`.** systemd parses `.env` more strictly than
+> `python-dotenv` does: no `export`, and values with spaces or `#` may need
+> quoting. If a value doesn't take, start the app manually with `python app.py`
+> once to confirm the `.env` loads cleanly.
+
+## Running alongside other services
+
+This is designed to coexist with the other services on the facility server:
+
+| Service              | Port / endpoint            | Relationship                          |
+|----------------------|----------------------------|---------------------------------------|
+| **hwcontrol** (this) | `:8010` (HTTP)             | The dashboard + API.                  |
+| **GenWatch**         | `:8000` (HTTP)             | Generator monitor — separate web app. |
+| **Mosquitto broker** | `localhost:1883` (MQTT)    | Shared bus; this app is a client.     |
+
+- **No web-port conflict.** hwcontrol defaults to `:8010`; GenWatch uses `:8000`.
+  If you change `PORT`, keep it off `8000` and update `HONEYWELL_REDIRECT_URI`.
+- **Shared broker.** hwcontrol connects to Mosquitto as a client (it does not run
+  its own broker), so it lives happily next to anything else on `1883`. It
+  connects with client id `<MQTT_BASE_TOPIC>-bridge` (default `honeywell-bridge`)
+  — keep that unique among your MQTT clients.
+- **Generator status comes from your PLC.** The load-shed automation triggers on
+  whatever your PLC publishes to the generator status topic (e.g.
+  `facility/generator/status`). Publish that message **retained** so a restart
+  mid-outage re-reads the current state correctly.
 
 ---
 
