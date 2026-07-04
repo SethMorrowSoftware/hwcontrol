@@ -123,6 +123,18 @@ def apply_action(targets: Any, action: dict) -> None:
     fan_mode = action.get("fan")
     setpoint_overrides = {k: v for k, v in action.items() if k != "fan"}
 
+    # Make this app the sole source of truth over the thermostats' onboard
+    # (Resideo-app) 7-day schedule. A setpoint written with anything other than
+    # PermanentHold - NoHold, or the merged-in current status when we send none -
+    # is surrendered back to the onboard schedule at the next period boundary, so
+    # the Resideo schedule would win. Defaulting programmatic changes (scheduler,
+    # automations, MQTT) to a permanent hold suspends the onboard schedule and
+    # keeps our value in force until we change it again. Callers that pass an
+    # explicit status keep full control - the manual zone control, for instance,
+    # sends NoHold when the operator deliberately resumes the onboard schedule.
+    if setpoint_overrides and not setpoint_overrides.get("thermostatSetpointStatus"):
+        setpoint_overrides["thermostatSetpointStatus"] = "PermanentHold"
+
     for did in device_ids:
         loc = store.location_of(did)
         if loc is None:

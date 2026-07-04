@@ -216,11 +216,19 @@ setpoints with a hold. Build them under **Schedules**, using one-tap **Turn ON**
 **How a program overrides the thermostat's own schedule.** Each period writes a
 setpoint with a *hold*:
 
-- **Permanent hold** (the preset default) suspends the thermostat's onboard
-  schedule indefinitely — the value stays until the next period replaces it, so
-  between periods the onboard schedule never acts. This app wins.
-- **Until next period** / **Resume schedule** hand control back to the onboard
-  schedule; use those only if you *want* the device's own schedule to take over.
+- **Permanent hold** (the default) suspends the thermostat's onboard schedule
+  indefinitely — the value stays until the next period replaces it, so between
+  periods the onboard schedule never acts. This app wins.
+- **Until next period** / **Resume onboard schedule** hand control back to the
+  onboard schedule; use those only if you *want* the device's own schedule to take
+  over.
+
+This is enforced at the server, not just in the UI: **any** change the app pushes
+without an explicit hold — a scheduled period (including "Turn OFF"), an automation
+action, an MQTT command, or a hand-edited rule in `schedules.json` — is written as
+a permanent hold. The only way a period hands the zone back to the onboard schedule
+is to explicitly choose "Resume onboard schedule" (`NoHold`). The manual per-zone
+controls still let an operator pick any hold for one-off adjustments.
 
 **The app asserts control immediately.** When you create or edit a program — and
 once at startup, after the first poll — the app applies the program's
