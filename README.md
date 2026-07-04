@@ -347,13 +347,17 @@ Synchronous, thread-based, and deliberately boring for reliability:
 trigger values, for restart-safe edge detection), `rotations.json` (active
 duty-cycle rotations, so they resume after a restart).
 
+These are written to the current working directory. A manual run keeps them next
+to the code; the systemd service (below) puts them in `/var/lib/hwcontrol` so the
+repo directory stays untouched and owned by your login user.
+
 ---
 
 ## Running as a service (systemd example)
 
 `sudo ./install.sh` generates and enables this unit for you (pointing at wherever
 you cloned the repo, using the port from your `.env`). The equivalent unit, if
-you'd rather write it by hand:
+you'd rather write it by hand — assuming the repo is cloned at `/opt/hwcontrol`:
 
 ```ini
 # /etc/systemd/system/hwcontrol.service
@@ -363,25 +367,36 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-WorkingDirectory=/opt/hwcontrol
-EnvironmentFile=/opt/hwcontrol/.env
-ExecStart=/opt/hwcontrol/.venv/bin/uvicorn app:app --host 0.0.0.0 --port 8010
-Restart=on-failure
-RestartSec=5
 User=hwcontrol
 Group=hwcontrol
+# Runtime state (tokens.json, *.json) lives here, owned by the service account.
+# systemd creates /var/lib/hwcontrol automatically.
+StateDirectory=hwcontrol
+WorkingDirectory=/var/lib/hwcontrol
+Environment=PYTHONPATH=/opt/hwcontrol
+EnvironmentFile=/opt/hwcontrol/.env
+ExecStart=/opt/hwcontrol/.venv/bin/uvicorn app:app --host 0.0.0.0 --port 8010
+Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-The working directory must be writable by the service user — it's where
-`tokens.json` and the other runtime files live.
+**Why the code and the state are separate.** The service runs from its own
+`/var/lib/hwcontrol` (owned by the `hwcontrol` account) and imports the code via
+`PYTHONPATH`, so the **repo directory stays owned by whoever cloned it** and
+`git pull` keeps working. Don't `chown` the repo to the service user — that's what
+triggers git's "detected dubious ownership" error. systemd reads `.env` as root
+before dropping privileges, so the service account never needs to read it.
+
+Because the service's runtime dir differs from the repo, authorize it through the
+dashboard's **Connect account** button (the running service writes the tokens),
+not by running `authorize.py` from the repo.
 
 > **Note on `EnvironmentFile`.** systemd parses `.env` more strictly than
 > `python-dotenv` does: no `export`, and values with spaces or `#` may need
-> quoting. If a value doesn't take, start the app manually with `python app.py`
-> once to confirm the `.env` loads cleanly.
+> quoting. If a value doesn't take, check `journalctl -u hwcontrol`.
 
 ## Running alongside other services
 
