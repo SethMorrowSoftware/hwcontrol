@@ -525,6 +525,14 @@ This is designed to coexist with the other services on the facility server:
   actions independently of MQTT.
 - **A zone shows offline** — `isAlive` came back false from Resideo (Wi-Fi/power at
   the thermostat). The dashboard reflects device reachability, not the app's.
+- **Schedules fire at the wrong time (e.g. hours early/late)** — almost always a
+  timezone issue. If `SCHEDULE_TZ` is blank the app uses the **server's** local
+  timezone, and most servers run in **UTC**, so a "22:00 Off" program fires at
+  22:00 UTC — 6pm Eastern in summer. Set `SCHEDULE_TZ` to your IANA zone (e.g.
+  `America/New_York`, **not** a bare `EST` — the IANA name handles EST/EDT for
+  you) and restart. Confirm the effective zone with `GET /api/status`
+  (`schedule_timezone` / `server_time`) or in the startup log line
+  ("Scheduler started … Timezone=…, local time now=…").
 
 ---
 

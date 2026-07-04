@@ -91,6 +91,18 @@ def _device_lock(device_id: str) -> threading.Lock:
         return lk
 
 
+def _local_now_str() -> str:
+    """Server's current time in the scheduler's timezone (what program times are
+    interpreted in), formatted for the status endpoint so a wrong clock/timezone
+    is easy to spot."""
+    if scheduler is not None:
+        try:
+            return scheduler._now().strftime("%Y-%m-%d %H:%M:%S %Z")
+        except Exception:
+            pass
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def notify(severity: str, kind: str, message: str) -> None:
     """Raise an operator-facing alert and mirror it to MQTT if connected."""
     alert = store.add_alert(severity, kind, message)
@@ -617,6 +629,10 @@ def api_status():
         "poll_interval_seconds": Config.POLL_INTERVAL_SECONDS,
         "mqtt_enabled": Config.MQTT_ENABLED,
         "mqtt_connected": bool(bridge and bridge.connected),
+        # Timezone schedules are interpreted in, plus the server's current local
+        # time, so a wrong-timezone misconfig (units firing hours off) is visible.
+        "schedule_timezone": scheduler.timezone_name() if scheduler else None,
+        "server_time": _local_now_str(),
     }
 
 
