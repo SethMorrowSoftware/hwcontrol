@@ -133,5 +133,7 @@ class Config:
             )
         # Make the resolved safety-critical flags visible at startup so a silent
         # misconfiguration (e.g. Sole Controller unexpectedly off) is obvious.
-        log.info("Config: SOLE_CONTROLLER=%s MQTT_ENABLED=%s POLL_INTERVAL_SECONDS=%s PORT=%s",
-                 cls.SOLE_CONTROLLER, cls.MQTT_ENABLED, cls.POLL_INTERVAL_SECONDS, cls.PORT)
+        log.info("Config: SOLE_CONTROLLER=%s MQTT_ENABLED=%s POLL_INTERVAL_SECONDS=%s PORT=%s "
+                 "SCHEDULE_TZ=%s",
+                 cls.SOLE_CONTROLLER, cls.MQTT_ENABLED, cls.POLL_INTERVAL_SECONDS, cls.PORT,
+                 cls.SCHEDULE_TZ or "(server local time)")

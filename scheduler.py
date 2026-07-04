@@ -107,7 +107,18 @@ class FacilityScheduler:
                     self._schedule(rule)
                 except Exception as exc:
                     log.error("Could not schedule program '%s': %s", rule.get("id"), exc)
-        log.info("Scheduler started with %d program(s).", len(rules))
+        # Log the effective timezone + local time so a wrong-timezone misconfig
+        # (schedules firing hours off because SCHEDULE_TZ is unset and the server
+        # is UTC) is obvious in the logs instead of a mystery.
+        log.info("Scheduler started with %d program(s). Timezone=%s, local time now=%s",
+                 len(rules), self.timezone_name(), self._now().strftime("%Y-%m-%d %H:%M %Z"))
+
+    def timezone_name(self) -> str:
+        """The timezone program times are interpreted in (from SCHEDULE_TZ, or the
+        server's local zone if unset). Surfaced so an operator can confirm at a
+        glance that '22:00 Off' means 22:00 in the RIGHT timezone."""
+        tz = getattr(self._sched, "timezone", None)
+        return str(tz) if tz else "system-local"
 
     def stop(self) -> None:
         self._sched.shutdown(wait=False)
