@@ -60,6 +60,25 @@ log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Make sure the service account can actually reach and run the app. A system user
+# usually can't traverse a home directory (mode 0750), which makes systemd fail
+# with status=203/EXEC. Grant traverse (o+x, not read) on each ancestor it can't
+# enter, and make the venv readable/executable.
+ensure_service_access() {
+  local user="$1" d="$SCRIPT_DIR"
+  while [ "$d" != "/" ]; do
+    if ! runuser -u "$user" -- test -x "$d" 2>/dev/null; then
+      chmod o+x "$d"
+      log "Granted traverse (o+x) on $d so '$user' can reach the app."
+    fi
+    d=$(dirname "$d")
+  done
+  if ! runuser -u "$user" -- test -x "$SCRIPT_DIR/.venv/bin/uvicorn" 2>/dev/null; then
+    chmod -R o+rX "$SCRIPT_DIR/.venv"
+    log "Adjusted .venv permissions so '$user' can run it."
+  fi
+}
+
 # ------------------------------------------------------------------ 1. Python
 command -v python3 >/dev/null 2>&1 \
   || die "python3 not found. Install it: sudo apt install python3 python3-venv python3-pip"
@@ -199,6 +218,10 @@ if want_service; then
   fi
   SERVICE_GROUP=$(id -gn "$SERVICE_USER")
 
+  # Ensure the service account can traverse to and execute the venv (handles the
+  # common case of the repo living under a 0750 home directory).
+  ensure_service_access "$SERVICE_USER"
+
   # We deliberately do NOT chown the repo. The code stays owned by whoever cloned
   # it, so `git pull` keeps working. The service instead runs from a private state
   # directory (/var/lib/<name>, created and owned by systemd) and imports the code
@@ -234,8 +257,14 @@ EOF
 
   if [ -d /run/systemd/system ]; then
     systemctl daemon-reload
-    systemctl enable --now "${SERVICE_NAME}.service"
-    log "Service '${SERVICE_NAME}' enabled and started on port $PORT."
+    systemctl enable "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
+    systemctl restart "${SERVICE_NAME}.service" || true
+    sleep 2   # let it start (or fail) before we check
+    if systemctl is-active --quiet "${SERVICE_NAME}.service"; then
+      log "Service '${SERVICE_NAME}' is running and enabled on port $PORT."
+    else
+      warn "Service '${SERVICE_NAME}' did not stay up. Check: journalctl -u ${SERVICE_NAME} -n 30"
+    fi
     echo "    status:  systemctl status ${SERVICE_NAME}"
     echo "    logs:    journalctl -u ${SERVICE_NAME} -f"
   else
