@@ -3,7 +3,7 @@ app.py
 ------
 Ties everything together and serves the dashboard.
 
-Run:  uvicorn app:app --host 0.0.0.0 --port 8000
+Run:  uvicorn app:app --host 0.0.0.0 --port 8010
 (or)  python app.py
 
 Flow on startup:
@@ -19,6 +19,7 @@ a "Connect account" button that kicks off the OAuth flow.
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import secrets
@@ -38,6 +39,7 @@ from config import Config
 from honeywell_client import HoneywellClient, HoneywellError, NotAuthorized
 from scheduler import FacilityScheduler
 from state_store import StateStore
+from storage import atomic_write_json, load_json
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,6 +67,29 @@ engine: Optional[AutomationEngine] = None
 _poller_stop = threading.Event()
 _schedules_asserted = False   # assert program setpoints once, after the first poll
 
+# Serializes a full poll so /api/refresh + /auth/callback + the poller thread
+# can't stack N concurrent polls all hammering the rate limit.
+_poll_lock = threading.Lock()
+
+# Per-device write locks so two writers (scheduler + automation + sole-control +
+# API) to the SAME zone serialize: each sees the previous write's result instead
+# of both merging onto the same stale cache and losing an update.
+_device_locks: dict[str, threading.Lock] = {}
+_device_locks_meta = threading.Lock()
+
+# OAuth CSRF: a random state per login, verified on the callback.
+_oauth_states: dict[str, float] = {}
+_oauth_states_lock = threading.Lock()
+
+
+def _device_lock(device_id: str) -> threading.Lock:
+    with _device_locks_meta:
+        lk = _device_locks.get(device_id)
+        if lk is None:
+            lk = threading.Lock()
+            _device_locks[device_id] = lk
+        return lk
+
 
 def notify(severity: str, kind: str, message: str) -> None:
     """Raise an operator-facing alert and mirror it to MQTT if connected."""
@@ -85,6 +110,17 @@ def sync_automation_topics() -> None:
         bridge.sync_trigger_topics(engine.subscribed_topics())
 
 
+def _mqtt_connection_change(connected: bool) -> None:
+    """Raise an operator alert when the broker link changes state. Without this a
+    dropped broker is invisible - and the generator load-shed rides on MQTT."""
+    if connected:
+        notify("info", "mqtt", "MQTT broker connected.")
+    else:
+        notify("critical", "mqtt",
+               "MQTT broker DISCONNECTED - automation triggers and external commands "
+               "are offline until it reconnects.")
+
+
 # ------------------------------------------------ sole controller (takeover)
 # Making this app the single top controller is done with a permanent hold, not by
 # editing the device's onboard schedule: a PermanentHold suspends the onboard
@@ -102,23 +138,22 @@ SOLE_CONTROL_FILE = Path("sole_control.json")
 # that (for any reason) won't report PermanentHold can't make us hammer the API.
 _TAKEOVER_COOLDOWN_SECONDS = 900
 _takeover_cooldown: dict[str, float] = {}
-_sole_control_lock = threading.Lock()
+_sole_control_lock = threading.Lock()      # guards the cooldown dict + the flag file
+_sole_enforce_lock = threading.Lock()      # single-flights an enforcement pass
 
 
 def _load_sole_control() -> bool:
     """Current Sole Controller setting: the persisted runtime choice if present,
     otherwise the startup default from config."""
-    try:
-        if SOLE_CONTROL_FILE.exists():
-            return bool(json.loads(SOLE_CONTROL_FILE.read_text()).get("enabled"))
-    except (OSError, ValueError):
-        pass
+    data = load_json(SOLE_CONTROL_FILE)
+    if isinstance(data, dict) and "enabled" in data:
+        return bool(data.get("enabled"))
     return Config.SOLE_CONTROLLER
 
 
 def _save_sole_control(enabled: bool) -> None:
     try:
-        SOLE_CONTROL_FILE.write_text(json.dumps({"enabled": bool(enabled)}))
+        atomic_write_json(SOLE_CONTROL_FILE, {"enabled": bool(enabled)})
     except OSError as exc:
         log.error("Could not persist sole-control setting: %s", exc)
 
@@ -134,46 +169,88 @@ def take_over_device(device_id: str) -> None:
     loc = store.location_of(device_id)
     if loc is None:
         raise HoneywellError(f"Unknown device {device_id} (has it been polled yet?)")
-    cached = store.get(device_id) or {}
-    current_cv = cached.get("changeableValues") or {}
-    # Merge only the hold onto the device's existing values so we freeze whatever
-    # it's doing right now (mode + setpoints) under a permanent hold.
-    client.set_thermostat(device_id, loc, {"thermostatSetpointStatus": "PermanentHold"},
-                          current_changeable=current_cv)
-    _refresh_one(device_id, loc)
+    with _device_lock(device_id):
+        cached = store.get(device_id) or {}
+        current_cv = cached.get("changeableValues") or {}
+        # Merge only the hold onto the device's existing values so we freeze whatever
+        # it's doing right now (mode + setpoints) under a permanent hold.
+        client.set_thermostat(device_id, loc, {"thermostatSetpointStatus": "PermanentHold"},
+                              current_changeable=current_cv)
+        # Update the cache locally instead of spending an extra GET; the next full
+        # poll reconciles reality anyway and the cooldown limits re-tries.
+        store.apply_local_override(device_id, {"thermostatSetpointStatus": "PermanentHold"})
 
 
 def _enforce_sole_control() -> None:
     """Re-assert a permanent hold on every online zone that isn't already held.
-    Cheap in steady state: once a zone is held it reports PermanentHold and is
-    skipped, so this only writes when a zone is (re)discovered or drifts back to
-    following its onboard schedule."""
+    Single-flighted so the poller and a manual toggle can't both sweep at once and
+    double the takeover burst. Cheap in steady state: a held zone reports
+    PermanentHold and is skipped."""
     if not _load_sole_control() or not client.is_authorized:
         return
-    now = time.time()
-    for d in store.devices():
-        did = d.get("deviceID")
-        if not did or not d.get("online") or _is_held(d):
-            continue
-        if now - _takeover_cooldown.get(did, 0.0) < _TAKEOVER_COOLDOWN_SECONDS:
-            continue
-        _takeover_cooldown[did] = now
-        try:
-            take_over_device(did)
-            log.info("Sole control: took over %s (permanent hold).", did)
-            store.add_alert("info", "sole_control",
-                            f"{d.get('name') or did} is now held by the app "
-                            f"(onboard schedule suspended).", did)
-        except HoneywellError as exc:
-            log.warning("Sole control: could not take over %s: %s", did, exc)
+    if not _sole_enforce_lock.acquire(blocking=False):
+        return  # a sweep is already running
+    try:
+        now = time.time()
+        for d in store.devices():
+            did = d.get("deviceID")
+            if not did or not d.get("online") or _is_held(d):
+                continue
+            with _sole_control_lock:
+                if now - _takeover_cooldown.get(did, 0.0) < _TAKEOVER_COOLDOWN_SECONDS:
+                    continue
+                _takeover_cooldown[did] = now
+            try:
+                take_over_device(did)
+                log.info("Sole control: took over %s (permanent hold).", did)
+                store.add_alert("info", "sole_control",
+                                f"{d.get('name') or did} is now held by the app "
+                                f"(onboard schedule suspended).", did)
+            except HoneywellError as exc:
+                log.warning("Sole control: could not take over %s: %s", did, exc)
+    finally:
+        _sole_enforce_lock.release()
 
 
 # ------------------------------------------------------------ command plumbing
 
-def apply_action(targets: Any, action: dict) -> None:
-    """Apply a control action to one device, a list, or 'all'. Used by both the
-    scheduler and MQTT commands. `action` may contain a 'fan' key handled
-    separately from setpoint fields."""
+def _clamp_overrides(cached: Optional[dict], overrides: dict) -> dict:
+    """Clamp heat/cool setpoints to the device's reported limits so a mistyped or
+    runaway value can't drive a zone to an extreme. Leaves fields alone when the
+    device doesn't report a limit."""
+    if not cached or not overrides:
+        return overrides
+    out = dict(overrides)
+    for field, lo_key, hi_key in (("heatSetpoint", "minHeatSetpoint", "maxHeatSetpoint"),
+                                  ("coolSetpoint", "minCoolSetpoint", "maxCoolSetpoint")):
+        val = out.get(field)
+        if val is None:
+            continue
+        try:
+            v = float(val)
+        except (TypeError, ValueError):
+            continue
+        lo, hi = cached.get(lo_key), cached.get(hi_key)
+        if isinstance(lo, (int, float)) and v < lo:
+            log.warning("Clamping %s %s up to device minimum %s", field, v, lo)
+            out[field] = lo
+        elif isinstance(hi, (int, float)) and v > hi:
+            log.warning("Clamping %s %s down to device maximum %s", field, v, hi)
+            out[field] = hi
+    return out
+
+
+def apply_action(targets: Any, action: dict, refresh: bool = True) -> list[str]:
+    """Apply a control action to one device, a list, or 'all'. Used by the
+    scheduler, automations and MQTT commands. Returns the list of deviceIDs that
+    FAILED (empty = all applied) so callers (the automation engine) can tell a
+    partial shed/restore from a success. `action` may contain a 'fan' key handled
+    separately from setpoint fields.
+
+    Set `refresh=False` for bulk automation/scheduler writes: the cache is updated
+    locally so serialized follow-up writes stay coherent, and the next poll
+    reconciles for the UI/MQTT - saving one API GET per zone against a tight limit.
+    """
     if targets == "all":
         device_ids = store.all_device_ids()
     elif isinstance(targets, str):
@@ -186,33 +263,40 @@ def apply_action(targets: Any, action: dict) -> None:
 
     # Make this app the sole source of truth over the thermostats' onboard
     # (Resideo-app) 7-day schedule. A setpoint written with anything other than
-    # PermanentHold - NoHold, or the merged-in current status when we send none -
-    # is surrendered back to the onboard schedule at the next period boundary, so
-    # the Resideo schedule would win. Defaulting programmatic changes (scheduler,
-    # automations, MQTT) to a permanent hold suspends the onboard schedule and
-    # keeps our value in force until we change it again. Callers that pass an
-    # explicit status keep full control - the manual zone control, for instance,
-    # sends NoHold when the operator deliberately resumes the onboard schedule.
+    # PermanentHold is surrendered back to the onboard schedule at the next period
+    # boundary, so the Resideo schedule would win. Defaulting programmatic changes
+    # (scheduler, automations, MQTT) to a permanent hold suspends the onboard
+    # schedule. Callers that pass an explicit status keep full control.
     if setpoint_overrides and not setpoint_overrides.get("thermostatSetpointStatus"):
         setpoint_overrides["thermostatSetpointStatus"] = "PermanentHold"
 
+    failed: list[str] = []
     for did in device_ids:
         loc = store.location_of(did)
         if loc is None:
             log.warning("No known location for device %s; skipping.", did)
+            failed.append(did)
             continue
-        cached = store.get(did)
-        current_cv = cached.get("changeableValues") if cached else None
-        try:
-            if setpoint_overrides:
-                client.set_thermostat(did, loc, setpoint_overrides, current_changeable=current_cv)
-            if fan_mode:
-                client.set_fan(did, loc, fan_mode)
-            _refresh_one(did, loc)
-        except HoneywellError as exc:
-            log.error("Failed to apply action to %s: %s", did, exc)
-            store.add_alert("critical", "control_failed",
-                            f"Control failed for {did}: {exc}", did)
+        # Serialize writes to this device so concurrent writers don't merge onto the
+        # same stale cache and lose each other's changes.
+        with _device_lock(did):
+            cached = store.get(did)
+            current_cv = cached.get("changeableValues") if cached else None
+            overrides = _clamp_overrides(cached, setpoint_overrides)
+            try:
+                if overrides:
+                    client.set_thermostat(did, loc, overrides, current_changeable=current_cv)
+                    store.apply_local_override(did, overrides)
+                if fan_mode:
+                    client.set_fan(did, loc, fan_mode)
+                if refresh:
+                    _refresh_one(did, loc)
+            except HoneywellError as exc:
+                log.error("Failed to apply action to %s: %s", did, exc)
+                store.add_alert("critical", "control_failed",
+                                f"Control failed for {did}: {exc}", did)
+                failed.append(did)
+    return failed
 
 
 def handle_mqtt_command(device_id: str, command: dict) -> None:
@@ -243,14 +327,14 @@ def _refresh_one(device_id: str, location_id: Any) -> None:
 
 
 def _emit_events(events: list[dict]) -> None:
+    if not (bridge and bridge.connected):
+        return
     for ev in events:
-        if bridge and bridge.connected:
-            bridge.publish_event(ev)
+        bridge.publish_event(ev)
     # push any freshly generated alerts to MQTT too
-    if bridge and bridge.connected:
-        for alert in store.alerts(limit=len(events) + 2):
-            if time.time() - alert["ts"] < 5:
-                bridge.publish_alert(alert)
+    for alert in store.alerts(limit=len(events) + 2):
+        if time.time() - alert["ts"] < 5:
+            bridge.publish_alert(alert)
 
 
 def _is_thermostat(device: Any) -> bool:
@@ -262,7 +346,8 @@ def _is_thermostat(device: Any) -> bool:
     dc = device.get("deviceClass")
     if isinstance(dc, str):
         return dc.lower() == "thermostat"
-    return "changeableValues" in device or "indoorTemperature" in device
+    return ("changeableValues" in device or "indoorTemperature" in device
+            or "allowedModes" in device or "thermostatSetpointStatus" in device)
 
 
 def poll_once() -> None:
@@ -272,47 +357,78 @@ def poll_once() -> None:
     state, so we read thermostats straight from it - a single API call for the
     whole account instead of one call per location. That keeps us well under
     Resideo's rate limit (the Basic plan is sized for ~20 devices every 5
-    minutes), which the old per-location fan-out blew past on accounts with
-    several locations, returning 429s and leaving the dashboard empty."""
+    minutes)."""
     if not client.is_authorized:
         return
+    # Single-flight: if a poll is already running (poller vs manual refresh vs the
+    # post-auth kick), don't stack a second one on top of the rate limit.
+    if not _poll_lock.acquire(blocking=False):
+        log.debug("Poll already in progress; skipping this trigger.")
+        return
     try:
-        locations = client.get_locations()
-    except NotAuthorized:
-        return
-    except HoneywellError as exc:
-        store.mark_poll(error=str(exc))
-        log.error("Poll failed at /locations: %s", exc)
-        return
+        try:
+            locations = client.get_locations()
+        except NotAuthorized:
+            return
+        except HoneywellError as exc:
+            store.mark_poll(error=str(exc))
+            log.error("Poll failed at /locations: %s", exc)
+            return
 
-    all_events: list[dict] = []
-    errors: list[str] = []
-    for loc in locations:
-        loc_id = loc.get("locationID")
-        thermostats = [d for d in (loc.get("devices") or []) if _is_thermostat(d)]
-        # Only fall back to a per-location fetch if the location truly carried no
-        # inline devices - otherwise we'd re-introduce the per-location call
-        # volume this whole approach exists to avoid.
-        if not thermostats and "devices" not in loc:
-            try:
-                thermostats = client.get_thermostats(loc_id)
-            except HoneywellError as exc:
-                errors.append(f"location {loc_id}: {exc}")
-                log.error("Poll failed at location %s: %s", loc_id, exc)
-                continue
-        all_events.extend(store.ingest(thermostats, loc_id))
+        all_events: list[dict] = []
+        errors: list[str] = []
+        seen: set[str] = set()
+        complete = True
+        for loc in locations:
+            loc_id = loc.get("locationID")
+            inline = loc.get("devices")
+            thermostats = [d for d in (inline or []) if _is_thermostat(d)]
+            # Only fall back to a per-location fetch if the location truly carried
+            # no inline devices - otherwise we'd re-introduce the per-location call
+            # volume this whole approach exists to avoid.
+            if not thermostats and inline is None:
+                try:
+                    thermostats = client.get_thermostats(loc_id)
+                except HoneywellError as exc:
+                    errors.append(f"location {loc_id}: {exc}")
+                    complete = False
+                    log.error("Poll failed at location %s: %s", loc_id, exc)
+                    continue
+            elif not thermostats and inline:
+                # Devices were present but none parsed as a thermostat - surface it
+                # so a summary-shaped payload can't silently drop real zones.
+                log.warning("Location %s reported %d device(s) but no recognized thermostats.",
+                            loc_id, len(inline))
+            for t in thermostats:
+                did = t.get("deviceID")
+                if did:
+                    seen.add(did)
+            all_events.extend(store.ingest(thermostats, loc_id))
 
-    # Record an error only when the poll ended up with no devices at all, so a
-    # rate-limited or otherwise-empty poll explains itself in the UI instead of
-    # showing a blank grid with a green "ok" status.
-    if errors and not store.all_device_ids():
-        store.mark_poll(error="; ".join(errors))
-    else:
-        store.mark_poll()
-    _publish_all(store.devices())
-    _emit_events(all_events)
-    log.info("Poll complete: %d device(s), %d change event(s).",
-             len(store.all_device_ids()), len(all_events))
+        # Reap devices that dropped off the account, but only after a *complete*
+        # poll that actually saw devices - never on a transient empty result (that
+        # would wipe every zone and mask the outage as success).
+        if complete and locations and seen:
+            all_events.extend(store.reap(seen))
+
+        # Poll-health accounting: a poll that returns nothing must NOT read as a
+        # green "ok" once devices have been seen before.
+        device_ids = store.all_device_ids()
+        if not locations:
+            store.mark_poll(error="Poll returned no locations (account/auth issue?)")
+        elif not seen and device_ids:
+            store.mark_poll(error="Poll returned no thermostats this cycle")
+        elif errors:
+            store.mark_poll(error="; ".join(errors))
+        else:
+            store.mark_poll()
+
+        _publish_all(store.devices())
+        _emit_events(all_events)
+        log.info("Poll complete: %d device(s), %d change event(s).",
+                 len(device_ids), len(all_events))
+    finally:
+        _poll_lock.release()
 
 
 def _poller_loop() -> None:
@@ -327,11 +443,22 @@ def _poller_loop() -> None:
         # Once devices are known, assert each program's active setpoints so the
         # app owns them immediately after a (re)start, not only at the next period.
         if not _schedules_asserted and scheduler and store.all_device_ids():
-            _schedules_asserted = True
-            try:
-                scheduler.apply_all_active_now()
-            except Exception as exc:
-                log.exception("Startup schedule assertion failed: %s", exc)
+            active = engine.active_rotation_targets() if engine else set()
+            if active:
+                # Restart mid-outage: re-asserting schedules would re-energize the
+                # shed zones all at once and overload the generator. Defer until the
+                # rotation stops (utility restored), then assert on a later poll.
+                log.warning("Active generator rotation(s) at startup; deferring schedule "
+                            "assertion for %d zone(s) to avoid re-energizing shed zones.",
+                            len(active))
+                notify("warning", "schedule_deferred",
+                       "Startup schedule assertion deferred: a generator rotation is active.")
+            else:
+                _schedules_asserted = True
+                try:
+                    scheduler.apply_all_active_now()
+                except Exception as exc:
+                    log.exception("Startup schedule assertion failed: %s", exc)
         # Keep every zone under the app's control so the onboard/Resideo schedule
         # never acts. Runs after schedule assertion so program setpoints win.
         try:
@@ -347,10 +474,15 @@ def _poller_loop() -> None:
 async def lifespan(app: FastAPI):
     global bridge, scheduler, engine
 
+    if Config.HOST not in ("127.0.0.1", "localhost", "::1") and not Config.DASHBOARD_TOKEN:
+        log.warning("SECURITY: binding %s with no DASHBOARD_TOKEN set - the control API is "
+                    "reachable UNAUTHENTICATED on the network. Set DASHBOARD_TOKEN and/or put "
+                    "the app behind a VPN or authenticating reverse proxy.", Config.HOST)
+
     # The automation engine reacts to inbound MQTT; build it first so the bridge
     # can hand it trigger messages.
     engine = AutomationEngine(
-        apply_fn=apply_action,
+        apply_fn=lambda t, v: apply_action(t, v, refresh=False),
         resolve_fn=store.all_device_ids,
         snapshot_read_fn=snapshot_read,
         notify_fn=notify,
@@ -366,6 +498,7 @@ async def lifespan(app: FastAPI):
                 username=Config.MQTT_USERNAME, password=Config.MQTT_PASSWORD,
                 command_handler=handle_mqtt_command,
                 trigger_handler=engine.handle_message,
+                on_connection_change=_mqtt_connection_change,
             )
             bridge.start()
         except Exception as exc:
@@ -376,7 +509,7 @@ async def lifespan(app: FastAPI):
     sync_automation_topics()  # subscribe to whatever loaded rules watch
 
     scheduler = FacilityScheduler(
-        apply_fn=apply_action,
+        apply_fn=lambda t, a: apply_action(t, a, refresh=False),
         timezone=Config.SCHEDULE_TZ or None,
     )
     scheduler.start()
@@ -389,6 +522,8 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         _poller_stop.set()
+        # Give an in-flight poll a moment to finish before we tear down its deps.
+        poller.join(timeout=5)
         if engine:
             engine.stop()
         if scheduler:
@@ -405,8 +540,9 @@ app = FastAPI(title="Facility Thermostat Dashboard", lifespan=lifespan)
 @app.middleware("http")
 async def token_gate(request: Request, call_next):
     if Config.DASHBOARD_TOKEN:
-        # Allow the OAuth callback through (Honeywell can't send our header).
-        if not request.url.path.startswith("/auth/callback"):
+        # Allow the OAuth callback through (Honeywell can't send our header). Exact
+        # match so a lookalike path like /auth/callbackX isn't also exempted.
+        if request.url.path != "/auth/callback":
             supplied = request.headers.get("X-Token") or request.query_params.get("token") or ""
             # Constant-time comparison so the token can't be guessed by timing.
             if not secrets.compare_digest(supplied, Config.DASHBOARD_TOKEN):
@@ -416,21 +552,50 @@ async def token_gate(request: Request, call_next):
 
 # ------------------------------------------------------------------- OAuth
 
+def _new_oauth_state() -> str:
+    st = secrets.token_urlsafe(16)
+    now = time.time()
+    with _oauth_states_lock:
+        # prune states older than 10 minutes
+        for k in [k for k, t in _oauth_states.items() if now - t > 600]:
+            _oauth_states.pop(k, None)
+        _oauth_states[st] = now
+    return st
+
+
+def _check_oauth_state(state: Optional[str]) -> bool:
+    if not state:
+        return False
+    with _oauth_states_lock:
+        if state in _oauth_states:
+            _oauth_states.pop(state, None)
+            return True
+    return False
+
+
 @app.get("/auth/login")
 def auth_login():
-    return RedirectResponse(client.authorize_url(state="dashboard"))
+    return RedirectResponse(client.authorize_url(state=_new_oauth_state()))
 
 
 @app.get("/auth/callback")
-def auth_callback(code: Optional[str] = None, error: Optional[str] = None):
+def auth_callback(code: Optional[str] = None, state: Optional[str] = None,
+                  error: Optional[str] = None):
     if error:
-        return HTMLResponse(f"<h3>Authorization failed:</h3><pre>{error}</pre>", status_code=400)
+        return HTMLResponse(f"<h3>Authorization failed:</h3><pre>{html.escape(error)}</pre>",
+                            status_code=400)
     if not code:
         return HTMLResponse("<h3>Missing authorization code.</h3>", status_code=400)
+    if not _check_oauth_state(state):
+        # No/expired/forged state: refuse so an attacker can't bind their own
+        # Resideo account's tokens to this server (login-CSRF).
+        return HTMLResponse("<h3>Invalid or expired authorization state. "
+                            "Please start the connect flow again.</h3>", status_code=400)
     try:
         client.exchange_code(code)
     except HoneywellError as exc:
-        return HTMLResponse(f"<h3>Token exchange failed:</h3><pre>{exc}</pre>", status_code=400)
+        return HTMLResponse(f"<h3>Token exchange failed:</h3><pre>{html.escape(str(exc))}</pre>",
+                            status_code=400)
     # Kick off an immediate poll in the background so data shows up fast.
     threading.Thread(target=poll_once, daemon=True).start()
     # Carry the dashboard token through the redirect; otherwise the gate would
@@ -443,12 +608,14 @@ def auth_callback(code: Optional[str] = None, error: Optional[str] = None):
 
 @app.get("/api/status")
 def api_status():
+    ts, err = store.poll_status()
     return {
         "authorized": client.is_authorized,
         "device_count": len(store.all_device_ids()),
-        "last_poll_ts": store.last_poll_ts,
-        "last_poll_error": store.last_poll_error,
+        "last_poll_ts": ts,
+        "last_poll_error": err,
         "poll_interval_seconds": Config.POLL_INTERVAL_SECONDS,
+        "mqtt_enabled": Config.MQTT_ENABLED,
         "mqtt_connected": bool(bridge and bridge.connected),
     }
 
@@ -471,20 +638,30 @@ def api_set_device(device_id: str, payload: dict = Body(...)):
     if loc is None:
         raise HTTPException(404, f"Unknown device {device_id} (has it been polled yet?)")
 
-    fan_mode = payload.pop("fan", None)
+    # Validate mode against what the device actually supports.
     cached = store.get(device_id)
+    mode = payload.get("mode")
+    if mode and cached:
+        allowed = cached.get("allowedModes") or []
+        if allowed and mode not in allowed:
+            raise HTTPException(400, f"mode '{mode}' not in allowedModes {allowed}")
+
+    fan_mode = payload.pop("fan", None)
     current_cv = cached.get("changeableValues") if cached else None
+    overrides = _clamp_overrides(cached, payload)
     try:
-        if payload:
-            client.set_thermostat(device_id, loc, payload, current_changeable=current_cv)
-        if fan_mode:
-            client.set_fan(device_id, loc, fan_mode)
+        with _device_lock(device_id):
+            if overrides:
+                client.set_thermostat(device_id, loc, overrides, current_changeable=current_cv)
+                store.apply_local_override(device_id, overrides)
+            if fan_mode:
+                client.set_fan(device_id, loc, fan_mode)
+            _refresh_one(device_id, loc)
     except HoneywellError as exc:
         raise HTTPException(502, f"Honeywell API error: {exc}")
 
-    _refresh_one(device_id, loc)
-    return {"ok": True, "device": store.get(device_id) and
-            {k: v for k, v in store.get(device_id).items() if k != "changeableValues"}}
+    d = store.get(device_id)
+    return {"ok": True, "device": d and {k: v for k, v in d.items() if k != "changeableValues"}}
 
 
 @app.post("/api/refresh")
@@ -568,7 +745,8 @@ def api_disable_onboard(device_id: str):
     except HoneywellError as exc:
         raise HTTPException(502, f"Couldn't take over the thermostat: {exc}")
     # Reset any cooldown so the poller won't fight a manual action.
-    _takeover_cooldown.pop(device_id, None)
+    with _sole_control_lock:
+        _takeover_cooldown.pop(device_id, None)
     notify("info", "sole_control",
            f"App took control of {device_id} (permanent hold; onboard schedule suspended).")
     return {"ok": True, "taken_over": True}
@@ -584,17 +762,20 @@ def api_restore_onboard(device_id: str):
     loc = store.location_of(device_id)
     if loc is None:
         raise HTTPException(404, f"Unknown device {device_id}")
-    cached = store.get(device_id) or {}
-    current_cv = cached.get("changeableValues") or {}
     try:
-        client.set_thermostat(device_id, loc, {"thermostatSetpointStatus": "NoHold"},
-                              current_changeable=current_cv)
-        _refresh_one(device_id, loc)
+        with _device_lock(device_id):
+            cached = store.get(device_id) or {}
+            current_cv = cached.get("changeableValues") or {}
+            client.set_thermostat(device_id, loc, {"thermostatSetpointStatus": "NoHold"},
+                                  current_changeable=current_cv)
+            store.apply_local_override(device_id, {"thermostatSetpointStatus": "NoHold"})
+            _refresh_one(device_id, loc)
     except HoneywellError as exc:
         raise HTTPException(502, f"Couldn't release the thermostat: {exc}")
     # Cool down so the poller doesn't immediately re-grab it within one interval
     # (it still will on a later poll if Sole Controller mode is on - by design).
-    _takeover_cooldown[device_id] = time.time()
+    with _sole_control_lock:
+        _takeover_cooldown[device_id] = time.time()
     notify("info", "sole_control", f"Released {device_id} to its onboard schedule.")
     return {"ok": True, "taken_over": False}
 
@@ -725,8 +906,8 @@ def api_run_automation(rule_id: str):
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    html = (STATIC_DIR / "index.html").read_text()
-    return HTMLResponse(html)
+    html_doc = (STATIC_DIR / "index.html").read_text()
+    return HTMLResponse(html_doc)
 
 
 # Serve any other static assets (none required, but handy for extension).

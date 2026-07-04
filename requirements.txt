@@ -1,6 +1,9 @@
-fastapi>=0.110
-uvicorn[standard]>=0.29
-requests>=2.31
-paho-mqtt>=1.6
-APScheduler>=3.10
-python-dotenv>=1.0
+# Upper bounds pin the major so a future breaking release can't silently break a
+# long-lived control system on the next `pip install`. Notably APScheduler 4.x is
+# an API rewrite and paho-mqtt 2.x changed its callback API (handled by a shim).
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.29,<1.0
+requests>=2.31,<3.0
+paho-mqtt>=1.6,<3.0
+APScheduler>=3.10,<4.0
+python-dotenv>=1.0,<2.0

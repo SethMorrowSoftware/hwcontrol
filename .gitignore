@@ -8,6 +8,8 @@ rotations.json
 trigger_state.json
 onboard_backup.json
 sole_control.json
+# Atomic-write backups of the runtime state files above.
+*.json.bak
 
 # --- Python ---
 __pycache__/

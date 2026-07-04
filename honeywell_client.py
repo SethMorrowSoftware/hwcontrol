@@ -13,20 +13,28 @@ Design notes (why it looks the way it does):
 
 * Honeywell ROTATES the refresh token on every refresh. If you don't persist
   the new refresh token you get one refresh and then failures. We always save
-  whatever comes back.
+  whatever comes back, and we save it *durably* (atomic write + .bak) so a crash
+  or power-loss mid-write can't corrupt tokens.json and brick auth.
 
-* All token acquisition is guarded by a lock so the FastAPI threadpool, the
-  poller thread, the scheduler thread and MQTT callbacks can't refresh at the
-  same time and clobber each other's rotated refresh token.
+* Token acquisition is single-flighted: a refresh runs the network POST WITHOUT
+  holding the state lock, so a slow token endpoint can't freeze every other
+  thread that just needs to read the current token. Concurrent 401s collapse to
+  one refresh instead of burning several rotations.
 
-* A tiny rate limiter enforces a minimum gap between calls and an hourly cap,
-  because the Basic plan is sized for ~20 devices polled every 5 minutes.
+* A tiny rate limiter enforces a minimum gap between calls and an hourly cap.
+  Crucially it computes how long to wait while holding its lock but *sleeps
+  outside it*, so hitting the hourly cap throttles the calling thread without
+  freezing every other API call (a generator load-shed must not wait behind a
+  poll that happened to trip the cap).
+
+* Every network/parse failure is surfaced as HoneywellError so callers can react
+  uniformly (raise an alert, skip a device) instead of an unexpected exception
+  tearing out of a bulk control loop and silently skipping the rest of the zones.
 """
 
 from __future__ import annotations
 
 import base64
-import json
 import logging
 import threading
 import time
@@ -37,6 +45,8 @@ from urllib.parse import urlencode
 
 import requests
 
+from storage import atomic_write_json, load_json
+
 log = logging.getLogger("honeywell.client")
 
 AUTH_BASE = "https://api.honeywellhome.com"
@@ -46,6 +56,10 @@ TOKEN_URL = f"{AUTH_BASE}/oauth2/token"
 
 # Refresh this many seconds before the token actually expires.
 TOKEN_SAFETY_WINDOW = 90
+# How long to wait for HTTP; (connect, read) so a stalled read can't hang forever.
+HTTP_TIMEOUT = (10, 30)
+# Bounded retries for transient failures on idempotent GETs.
+_GET_RETRIES = 2
 
 
 class HoneywellError(RuntimeError):
@@ -57,34 +71,42 @@ class NotAuthorized(HoneywellError):
 
 
 class _RateLimiter:
-    """Minimum-interval + rolling hourly cap. Blocks (sleeps) when needed."""
+    """Minimum-interval + rolling hourly cap.
+
+    Computes the required wait while holding the lock, then sleeps OUTSIDE it and
+    re-checks, so one thread parked waiting on the hourly cap never blocks other
+    threads from making progress the instant a slot frees up.
+    """
 
     def __init__(self, min_interval: float = 1.0, hourly_cap: int = 250):
-        self.min_interval = min_interval
-        self.hourly_cap = hourly_cap
+        self.min_interval = max(0.0, min_interval)
+        self.hourly_cap = max(1, hourly_cap)
         self._last = 0.0
         self._calls: deque[float] = deque()
         self._lock = threading.Lock()
 
     def acquire(self) -> None:
-        with self._lock:
-            now = time.monotonic()
-            # enforce minimum spacing
-            wait = self.min_interval - (now - self._last)
-            if wait > 0:
-                time.sleep(wait)
+        while True:
+            with self._lock:
                 now = time.monotonic()
-            # enforce hourly cap
-            cutoff = now - 3600
-            while self._calls and self._calls[0] < cutoff:
-                self._calls.popleft()
-            if len(self._calls) >= self.hourly_cap:
-                sleep_for = self._calls[0] + 3600 - now
-                log.warning("Hourly rate cap reached; sleeping %.0fs", sleep_for)
-                time.sleep(max(sleep_for, 0))
-                now = time.monotonic()
-            self._calls.append(now)
-            self._last = now
+                # enforce minimum spacing
+                wait = self.min_interval - (now - self._last)
+                # enforce hourly cap
+                cutoff = now - 3600
+                while self._calls and self._calls[0] < cutoff:
+                    self._calls.popleft()
+                if len(self._calls) >= self.hourly_cap:
+                    cap_wait = self._calls[0] + 3600 - now
+                    if cap_wait > wait:
+                        wait = cap_wait
+                        log.warning("Hourly rate cap reached; throttling %.0fs", cap_wait)
+                if wait <= 0:
+                    # Reserve the slot now, while still holding the lock.
+                    self._calls.append(now)
+                    self._last = now
+                    return
+            # Sleep without the lock held, then loop and re-check.
+            time.sleep(wait)
 
 
 class HoneywellClient:
@@ -104,7 +126,8 @@ class HoneywellClient:
         self.redirect_uri = redirect_uri
         self.token_path = Path(token_path)
 
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()          # guards the token fields below
+        self._refresh_lock = threading.Lock()  # single-flights the refresh network call
         self._access_token: Optional[str] = None
         self._refresh_token: Optional[str] = None
         self._expires_at: float = 0.0
@@ -141,40 +164,84 @@ class HoneywellClient:
         log.info("OAuth authorization complete; tokens stored.")
 
     def _refresh(self) -> None:
-        if not self._refresh_token:
+        """Run a refresh network POST. Does NOT hold self._lock across the call."""
+        with self._lock:
+            rt = self._refresh_token
+        if not rt:
             raise NotAuthorized("No refresh token available. Complete OAuth login first.")
         log.info("Refreshing access token...")
-        data = {
-            "grant_type": "refresh_token",
-            "refresh_token": self._refresh_token,
-        }
-        self._token_request(data)
+        self._token_request({"grant_type": "refresh_token", "refresh_token": rt})
 
     def _token_request(self, data: dict[str, str]) -> None:
         headers = {
             "Authorization": self._basic_auth_header(),
             "Content-Type": "application/x-www-form-urlencoded",
         }
-        resp = self._session.post(TOKEN_URL, headers=headers, data=data, timeout=30)
+        try:
+            resp = self._session.post(TOKEN_URL, headers=headers, data=data, timeout=HTTP_TIMEOUT)
+        except requests.exceptions.RequestException as exc:
+            raise HoneywellError(f"Token request network error: {exc}") from exc
         if not resp.ok:
             raise HoneywellError(f"Token request failed ({resp.status_code}): {resp.text}")
-        payload = resp.json()
-        self._access_token = payload["access_token"]
+        try:
+            payload = resp.json()
+            access = payload["access_token"]
+        except (ValueError, KeyError, TypeError) as exc:
+            raise HoneywellError(f"Malformed token response: {exc}") from exc
         # Honeywell rotates the refresh token: keep whatever came back, but fall
         # back to the old one if (rarely) none was returned.
-        self._refresh_token = payload.get("refresh_token", self._refresh_token)
-        expires_in = int(payload.get("expires_in", "599"))
-        self._expires_at = time.time() + expires_in
-        self._save_tokens()
+        new_refresh = payload.get("refresh_token")
+        try:
+            expires_in = int(payload.get("expires_in", 599))
+        except (TypeError, ValueError):
+            expires_in = 599
+        with self._lock:
+            self._access_token = access
+            if new_refresh:
+                self._refresh_token = new_refresh
+            self._expires_at = time.time() + expires_in
+            snapshot = {
+                "access_token": self._access_token,
+                "refresh_token": self._refresh_token,
+                "expires_at": self._expires_at,
+            }
+        self._save_tokens(snapshot)
 
     def _valid_token(self) -> str:
-        """Return a valid access token, refreshing if necessary. Thread-safe."""
+        """Return a valid access token, refreshing if necessary. Thread-safe and
+        single-flighted: the refresh network call does not hold self._lock."""
         with self._lock:
             if not self._access_token:
                 raise NotAuthorized("Not authorized yet. Visit /auth/login to connect the account.")
-            if time.time() >= (self._expires_at - TOKEN_SAFETY_WINDOW):
-                self._refresh()
-            return self._access_token
+            if time.time() < (self._expires_at - TOKEN_SAFETY_WINDOW):
+                return self._access_token
+        return self._refresh_and_get()
+
+    def _refresh_and_get(self, used_token: Optional[str] = None) -> str:
+        """Single-flight a refresh. If another thread already produced a fresh
+        token while we waited for the refresh lock, use that instead of burning
+        another rotation.
+
+        ``used_token`` is passed from the 401 path: the server rejected that exact
+        token, so we must refresh even though it may not be expired by the clock -
+        UNLESS another thread has already rotated to a different token in the
+        meantime (then that new token is what we retry with)."""
+        with self._refresh_lock:
+            with self._lock:
+                if used_token is None:
+                    # Proactive (near-expiry) refresh: skip if another thread just did it.
+                    if self._access_token and time.time() < (self._expires_at - TOKEN_SAFETY_WINDOW):
+                        return self._access_token
+                else:
+                    # 401 path: skip our refresh only if the current token already
+                    # differs from the one that got rejected.
+                    if self._access_token and self._access_token != used_token:
+                        return self._access_token
+            self._refresh()
+            with self._lock:
+                if not self._access_token:
+                    raise NotAuthorized("Refresh produced no token.")
+                return self._access_token
 
     @property
     def is_authorized(self) -> bool:
@@ -182,36 +249,29 @@ class HoneywellClient:
 
     # ------------------------------------------------------------- persistence
 
-    def _save_tokens(self) -> None:
+    def _save_tokens(self, snapshot: dict) -> None:
         try:
-            self.token_path.write_text(
-                json.dumps(
-                    {
-                        "access_token": self._access_token,
-                        "refresh_token": self._refresh_token,
-                        "expires_at": self._expires_at,
-                    }
-                )
-            )
-            # Tokens are secrets; keep them owner-readable only.
-            try:
-                self.token_path.chmod(0o600)
-            except OSError:
-                pass
-        except OSError as exc:  # pragma: no cover
-            log.error("Could not persist tokens: %s", exc)
+            atomic_write_json(self.token_path, snapshot, mode=0o600)
+        except OSError as exc:
+            # A failed save of a freshly *rotated* refresh token is dangerous:
+            # the in-memory token works now, but on the next restart the on-disk
+            # copy holds a token Honeywell has already invalidated -> auth bricked.
+            # Make it loud rather than a buried debug line.
+            log.error("CRITICAL: could not persist rotated tokens to %s: %s -- "
+                      "auth will break on restart until this is fixed.",
+                      self.token_path, exc)
 
     def _load_tokens(self) -> None:
-        if not self.token_path.exists():
+        data = load_json(self.token_path)
+        if not isinstance(data, dict):
             return
         try:
-            data = json.loads(self.token_path.read_text())
             self._access_token = data.get("access_token")
             self._refresh_token = data.get("refresh_token")
             self._expires_at = float(data.get("expires_at", 0))
             log.info("Loaded stored tokens from %s", self.token_path)
-        except (OSError, ValueError) as exc:
-            log.warning("Could not load stored tokens: %s", exc)
+        except (ValueError, TypeError) as exc:
+            log.warning("Stored tokens malformed: %s", exc)
 
     # ---------------------------------------------------------------- requests
 
@@ -225,33 +285,51 @@ class HoneywellClient:
             "Accept": "application/json",
         }
         url = f"{API_BASE}/{path.lstrip('/')}"
-        self._limiter.acquire()
-        resp = self._session.request(
-            method, url, headers=headers, params=params, json=json_body, timeout=30
-        )
+        is_get = method.upper() == "GET"
 
-        # One automatic retry on 401 in case the token died early.
-        if resp.status_code == 401:
-            log.info("Got 401; forcing a refresh and retrying once.")
-            with self._lock:
-                self._refresh()
-                token = self._access_token
-            headers["Authorization"] = f"Bearer {token}"
+        attempt = 0
+        while True:
             self._limiter.acquire()
-            resp = self._session.request(
-                method, url, headers=headers, params=params, json=json_body, timeout=30
-            )
+            try:
+                resp = self._session.request(
+                    method, url, headers=headers, params=params, json=json_body, timeout=HTTP_TIMEOUT
+                )
+            except requests.exceptions.RequestException as exc:
+                # Transient network error: retry idempotent GETs a couple of times,
+                # otherwise surface as HoneywellError so callers handle it uniformly.
+                if is_get and attempt < _GET_RETRIES:
+                    attempt += 1
+                    time.sleep(min(2 ** attempt, 8))
+                    continue
+                raise HoneywellError(f"{method} {path} network error: {exc}") from exc
 
-        if resp.status_code == 429:
-            raise HoneywellError("Rate limited by Honeywell (429). Slow down polling / request a higher limit.")
-        if not resp.ok:
-            raise HoneywellError(f"{method} {path} failed ({resp.status_code}): {resp.text}")
-        if resp.status_code == 204 or not resp.content:
-            return None
-        try:
-            return resp.json()
-        except ValueError:
-            return resp.text
+            # One automatic refresh+retry on 401 in case the token died early.
+            if resp.status_code == 401:
+                log.info("Got 401; forcing a refresh and retrying once.")
+                token = self._refresh_and_get(used_token=token)
+                headers["Authorization"] = f"Bearer {token}"
+                self._limiter.acquire()
+                try:
+                    resp = self._session.request(
+                        method, url, headers=headers, params=params, json=json_body, timeout=HTTP_TIMEOUT
+                    )
+                except requests.exceptions.RequestException as exc:
+                    raise HoneywellError(f"{method} {path} network error after refresh: {exc}") from exc
+
+            if resp.status_code == 429:
+                raise HoneywellError("Rate limited by Honeywell (429). Slow down polling / request a higher limit.")
+            if 500 <= resp.status_code < 600 and is_get and attempt < _GET_RETRIES:
+                attempt += 1
+                time.sleep(min(2 ** attempt, 8))
+                continue
+            if not resp.ok:
+                raise HoneywellError(f"{method} {path} failed ({resp.status_code}): {resp.text}")
+            if resp.status_code == 204 or not resp.content:
+                return None
+            try:
+                return resp.json()
+            except ValueError:
+                return resp.text
 
     # ----------------------------------------------------------------- reads
 
@@ -264,9 +342,12 @@ class HoneywellClient:
         return self._request("GET", "devices/thermostats", params={"locationId": location_id}) or []
 
     def get_thermostat(self, device_id: str, location_id: int | str) -> dict:
-        return self._request(
+        device = self._request(
             "GET", f"devices/thermostats/{device_id}", params={"locationId": location_id}
         )
+        if not isinstance(device, dict):
+            raise HoneywellError(f"Unexpected empty response reading thermostat {device_id}")
+        return device
 
     # ----------------------------------------------------------------- writes
 
@@ -291,9 +372,11 @@ class HoneywellClient:
 
         body = {**current_changeable, **overrides}
 
-        # HoldUntil requires nextPeriodTime; other hold types must not send it.
+        # HoldUntil requires nextPeriodTime; every other hold (and an absent hold)
+        # must NOT carry a stale nextPeriodTime inherited from the cached object,
+        # or Resideo may reject it or apply an unintended timed hold.
         status = body.get("thermostatSetpointStatus")
-        if status and status != "HoldUntil":
+        if status != "HoldUntil":
             body.pop("nextPeriodTime", None)
 
         self._request(

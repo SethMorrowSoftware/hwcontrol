@@ -200,11 +200,22 @@ disabled). To go live, make sure `MQTT_ENABLED=true` and the broker is connected
 (the status strip shows this).
 
 **Restart-safe.** Snapshots, the trigger's last-seen state, and any active
-rotation are all persisted, so if the app restarts mid-outage: the running
-rotation resumes on its schedule, a *retained* "on" message replayed by the
-broker will **not** re-fire the shed rule or clobber the good snapshot, and the
-genuine transition to "off" still stops the rotation and triggers the restore.
+rotation are all persisted **atomically** (temp-file + rename, with a `.bak`
+fallback), so a crash or power-loss mid-write can't corrupt them — important on a
+system that runs on generator power. If the app restarts mid-outage: the running
+rotation resumes *and reconciles* the physical zones to its last-applied window
+(so it can never come back with more than `run_count` on), a *retained* "on"
+message replayed by the broker will **not** re-fire the shed rule or clobber the
+good snapshot, the startup schedule assertion is **deferred** while a rotation is
+active (so it doesn't re-energize the shed zones and overload the generator), and
+the genuine transition to "off" still stops the rotation and triggers the restore.
 (For this to work across a restart, publish the generator status **retained**.)
+
+The bridge connects with a persistent session (`clean_session=false`) and
+subscribes/publishes at **QoS 1**, so a brief broker blip during an outage won't
+silently drop the "utility restored" message. It also raises an operator alert the
+moment the broker link drops (and clears it on reconnect) instead of falsely
+reporting "connected" — so a dead broker during an outage is visible, not hidden.
 
 ---
 
@@ -299,15 +310,20 @@ set, the payload is parsed as JSON and that dot-path is extracted first (e.g.
 | Action          | What it does                                                                 |
 |-----------------|------------------------------------------------------------------------------|
 | `set`           | Apply `values` (mode / heatSetpoint / coolSetpoint / hold / fan) to targets. |
-| `snapshot`      | Save targets' current settings under `name` for later restore.               |
-| `restore`       | Restore every device saved in snapshot `name`.                               |
+| `snapshot`      | Save targets' current settings under `name` for later restore. **Non-clobbering**: if a snapshot of that name already exists (an outage in progress) it's kept, so a retained "on" replayed after a restart can't overwrite the good pre-outage capture with the already-shed state. |
+| `restore`       | Restore every device saved in snapshot `name`, then clear the snapshot on full success so the next outage captures fresh. Zones that fail to restore keep the snapshot for a retry. |
 | `rotate`        | Duty-cycle a group: keep `run_count` running, slide the window every `interval_minutes`; on/off units get `on_values` / `off_values`. |
 | `stop_rotation` | Stop the rotation with `rotation_id`.                                         |
 
 **Targets** are `"all"`, a single `"deviceID"`, or a list `["id1","id2"]`.
 
-The rotation only sends commands to units whose on/off membership actually changes
-each tick, to stay kind to the rate limit.
+Each rotation tick drives the **full** desired state — the current window to
+`on_values`, every other member to `off_values` — rather than only the members it
+believes changed. That's a deliberate safety choice: it guarantees no more than
+`run_count` zones are ever energized even if a zone drifted on (at the wall, via
+the Resideo app, or from an earlier failed write) or the window re-entered from a
+new outage. Keep rotation groups to the genuinely critical zones and the interval
+at/above the 5-minute minimum so the extra writes stay well within the rate limit.
 
 ### Custom rules
 

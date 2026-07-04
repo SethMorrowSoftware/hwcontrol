@@ -10,6 +10,26 @@ shed non-critical zones (turn them Off) and duty-cycle the critical ones so they
 share the generator's limited capacity instead of all running at once. When utility
 power returns, we restore every zone to exactly how it was before.
 
+Safety-critical design choices (this path runs on generator power):
+
+* The trigger's rising edge is latched only AFTER the actions succeed. If a shed
+  partially fails (a zone unreachable, a 429), the rule is NOT marked "fired", so a
+  re-announced "on" retries it instead of leaving non-critical zones running on the
+  generator with the log falsely reporting success.
+
+* Each rotation tick drives the FULL desired state (window -> on, everyone else ->
+  off) rather than only flipping the members it believes changed. That guarantees
+  no more than run_count zones are ever energized even if a zone drifted on (wall,
+  Resideo app, a failed earlier write) or the window re-entered from a new outage.
+
+* snapshot is non-clobbering and restore clears the snapshot on success, so a
+  retained "on" replayed after a restart can't overwrite the good pre-outage
+  snapshot with the already-shed state (which would drive every zone permanently
+  Off on restore).
+
+* All state is persisted atomically (storage.atomic_write_json) with a .bak
+  fallback, so a crash/power-loss mid-write can't corrupt it.
+
 ------------------------------------------------------------------ rule shape
 
 A rule has a trigger (one or more conditions combined with AND/OR) and an ordered
@@ -42,26 +62,12 @@ list of actions:
   ]
 }
 
-A rule fires when its condition combination becomes true: with mode "all" every
-condition must currently match (each condition remembers the last message seen on
-its topic); with mode "any" a single matching condition is enough. "on_change"
-fires on the rising edge into true; "every_message" fires on each matching message.
-
 Legacy rules using a single {"topic", "match": {...}} trigger are migrated to the
 one-condition shape automatically.
 
------------------------------------------------------------------- action types
-
-  set          apply `values` (mode/heatSetpoint/coolSetpoint/thermostatSetpointStatus/fan)
-               to `targets` ("all" | [deviceID,...] | "deviceID").
-  snapshot     save current settings of `targets` under `name` so they can be restored.
-  restore      restore devices saved in snapshot `name`.
-  rotate       duty-cycle a group: keep `run_count` units running at a time, sliding the
-               window every `interval_minutes`; on/off units get `on_values`/`off_values`.
-  stop_rotation  stop the rotation with `rotation_id`.
-
 Injected dependencies (kept generic so this module doesn't import the API client):
-  apply_fn(targets, values)      -> apply a control action (app.apply_action)
+  apply_fn(targets, values)      -> apply a control action; returns a list of
+                                    deviceIDs that FAILED (empty = all applied).
   resolve_fn()                   -> list every known deviceID
   snapshot_read_fn(device_id)    -> current changeableValues dict for a device (or None)
   notify_fn(severity, kind, msg) -> raise an operator-facing alert
@@ -81,16 +87,19 @@ from typing import Any, Callable, Optional
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from storage import atomic_write_json, load_json
+
 log = logging.getLogger("honeywell.automation")
 
-ApplyFn = Callable[[Any, dict], None]
+ApplyFn = Callable[[Any, dict], Any]
 ResolveFn = Callable[[], list]
 SnapshotReadFn = Callable[[str], Optional[dict]]
 NotifyFn = Callable[[str, str, str], None]
 
 # Compressors hate short-cycling. Refuse rotation intervals below this.
 MIN_ROTATION_MINUTES = 5
-# Fields we carry through a snapshot/restore.
+# Fields we carry through a snapshot/restore. thermostatSetpointStatus is always
+# captured so restore hands a zone back with exactly the hold it had.
 _RESTORE_FIELDS = ("mode", "heatSetpoint", "coolSetpoint",
                    "thermostatSetpointStatus", "autoChangeoverActive")
 
@@ -117,6 +126,11 @@ def _normalize_rule(rule: dict) -> dict:
     return rule
 
 
+def _dedupe(seq) -> list:
+    """Order-preserving de-dup (rotation windows must not double-count a zone)."""
+    return list(dict.fromkeys(seq))
+
+
 class AutomationEngine:
     def __init__(
         self,
@@ -141,13 +155,16 @@ class AutomationEngine:
         self.trigger_state_path = Path(trigger_state_path)
         self.rotations_path = Path(rotations_path)
 
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._rules: dict[str, dict] = {}
         self._snapshots: dict[str, dict[str, dict]] = {}   # name -> {deviceID: changeableValues}
         self._rotations: dict[str, dict] = {}              # rotation_id -> runtime state
         self._cond_state: dict[str, list] = {}             # rule_id -> [[matched, value] | None, ...]
         self._last_overall: dict[str, bool] = {}           # rule_id -> last combined result
         self._last_fired: dict[str, float] = {}            # rule_id -> ts
+        # Serializes action execution (MQTT handler, "Run now", rotation ticks) so
+        # a manual test can't clobber a real outage's snapshot/rotation midway.
+        self._action_lock = threading.Lock()
 
         self._sched = BackgroundScheduler()
         self._load()
@@ -174,6 +191,16 @@ class AutomationEngine:
                     if cond.get("topic"):
                         topics.add(cond["topic"])
             return topics
+
+    def active_rotation_targets(self) -> set[str]:
+        """Every zone currently under an active duty-cycle rotation. The poller
+        uses this to avoid re-energizing shed zones with a schedule assertion when
+        it (re)starts mid-outage."""
+        with self._lock:
+            out: set[str] = set()
+            for st in self._rotations.values():
+                out.update(st.get("targets", []))
+            return out
 
     # ------------------------------------------------------------- rule CRUD
 
@@ -275,6 +302,7 @@ class AutomationEngine:
             if at not in _ACTION_TYPES:
                 raise ValueError(f"unknown action type '{at}'")
             if at == "rotate":
+                targets = _dedupe(self._static_targets(a.get("targets")))
                 if not a.get("targets"):
                     raise ValueError("rotate needs targets")
                 if int(a.get("run_count", 1)) < 1:
@@ -282,10 +310,23 @@ class AutomationEngine:
                 if int(a.get("interval_minutes", 0)) < MIN_ROTATION_MINUTES:
                     raise ValueError(f"rotate interval_minutes must be >= {MIN_ROTATION_MINUTES} "
                                      f"(protects compressors from short-cycling)")
+                # run_count >= number of zones means nothing is ever shed - warn so
+                # a mis-set rotation doesn't quietly run every zone on the generator.
+                if targets and int(a.get("run_count", 1)) >= len(targets):
+                    log.warning("rotate '%s': run_count %s >= %d zones; no zones will be shed.",
+                                a.get("rotation_id"), a.get("run_count"), len(targets))
             if at in ("snapshot", "restore") and not a.get("name"):
                 raise ValueError(f"{at} needs a snapshot name")
             if at == "stop_rotation" and not a.get("rotation_id"):
                 raise ValueError("stop_rotation needs a rotation_id")
+
+    @staticmethod
+    def _static_targets(targets: Any) -> list:
+        if targets == "all" or targets is None:
+            return []
+        if isinstance(targets, str):
+            return [targets]
+        return list(targets)
 
     # ------------------------------------------------------- message handling
 
@@ -324,17 +365,29 @@ class AutomationEngine:
                 overall = len(seen) == len(conditions) and all(s[0] for s in state)
             prev = self._last_overall.get(rid, False)
             self._cond_state[rid] = state
-            self._last_overall[rid] = overall
+            on_change = trig.get("retrigger", "on_change") == "on_change"
+            # Decide whether to fire now.
+            fire = overall and not (on_change and prev)
+            # Commit the combined state EXCEPT the rising-edge latch: if we're about
+            # to fire, leave _last_overall at prev until the actions actually succeed
+            # so a failed shed retries on the next matching message.
+            if not overall:
+                self._last_overall[rid] = False
+            elif not fire:
+                self._last_overall[rid] = True
         self._save_trigger_state()
 
-        if not overall:
+        if not fire:
             return
-        if trig.get("retrigger", "on_change") == "on_change" and prev:
-            return  # already true; wait for a falling edge before firing again
 
         self._last_fired[rid] = time.time()
         log.info("Automation '%s' triggered (topic=%s payload=%r).", rid, topic, payload[:80])
-        self._run_actions(rule)
+        ok = self._run_actions(rule)
+        with self._lock:
+            # Latch the edge only if the actions succeeded; otherwise a re-announced
+            # "on" will fire again (retry) rather than silently give up.
+            self._last_overall[rid] = bool(ok)
+        self._save_trigger_state()
 
     def _match(self, cond: dict, payload: str) -> tuple[bool, Any]:
         mtype = cond.get("type", "equals")
@@ -346,9 +399,12 @@ class AutomationEngine:
             try:
                 obj = json.loads(raw)
                 for part in str(field).split("."):
-                    obj = obj[part]
+                    if isinstance(obj, list):
+                        obj = obj[int(part)]      # allow array indices in the dot-path
+                    else:
+                        obj = obj[part]
                 subject = obj
-            except (ValueError, KeyError, TypeError):
+            except (ValueError, KeyError, TypeError, IndexError):
                 return (False, None)
 
         if mtype == "any":
@@ -356,9 +412,8 @@ class AutomationEngine:
 
         target = cond.get("value")
         if mtype in ("gt", "lt", "between"):
-            try:
-                s = float(subject)
-            except (TypeError, ValueError):
+            s = self._as_number(subject)
+            if s is None:
                 return (False, subject)
             if mtype == "between":
                 try:
@@ -374,16 +429,23 @@ class AutomationEngine:
                 return (False, subject)
             return ((s > t) if mtype == "gt" else (s < t), subject)
 
-        s_str = str(subject)
-        t_str = str(target)
+        # For equality/contains, compare numerically when both sides are numbers so
+        # a JSON field of 85 matches "85" / 85.0 (a common BMS payload mismatch).
+        s_num, t_num = self._as_number(subject), self._as_number(target)
+        s_str = self._stringify(subject)
+        t_str = self._stringify(target)
         if cond.get("ignore_case", True):
             s_cmp, t_cmp = s_str.lower(), t_str.lower()
         else:
             s_cmp, t_cmp = s_str, t_str
 
         if mtype == "equals":
+            if s_num is not None and t_num is not None:
+                return (s_num == t_num, subject)
             return (s_cmp == t_cmp, subject)
         if mtype == "not_equals":
+            if s_num is not None and t_num is not None:
+                return (s_num != t_num, subject)
             return (s_cmp != t_cmp, subject)
         if mtype == "contains":
             return (t_cmp in s_cmp, subject)
@@ -391,6 +453,21 @@ class AutomationEngine:
             flags = re.IGNORECASE if cond.get("ignore_case", True) else 0
             return (re.search(t_str, s_str, flags) is not None, subject)
         return (False, subject)
+
+    @staticmethod
+    def _as_number(v: Any) -> Optional[float]:
+        if isinstance(v, bool):
+            return None  # don't treat True/False as 1/0 for equality
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _stringify(v: Any) -> str:
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        return str(v)
 
     # --------------------------------------------------------- action runner
 
@@ -404,16 +481,25 @@ class AutomationEngine:
         self._run_actions(rule)
         return True
 
-    def _run_actions(self, rule: dict) -> None:
+    def _run_actions(self, rule: dict) -> bool:
+        """Run a rule's actions in order. Returns True only if every action fully
+        succeeded (used to decide whether to latch the trigger's rising edge)."""
         summary = []
-        for action in rule.get("actions", []):
-            try:
-                summary.append(self._run_action(action))
-            except Exception as exc:
-                log.error("Action %s in '%s' failed: %s", action.get("type"), rule["id"], exc)
-                summary.append(f"{action.get('type')} FAILED")
-        self.notify_fn("info", "automation",
+        all_ok = True
+        with self._action_lock:
+            for action in rule.get("actions", []):
+                try:
+                    text, ok = self._run_action(action)
+                    summary.append(text)
+                    all_ok = all_ok and ok
+                except Exception as exc:
+                    log.error("Action %s in '%s' failed: %s", action.get("type"), rule["id"], exc)
+                    summary.append(f"{action.get('type')} FAILED")
+                    all_ok = False
+        severity = "info" if all_ok else "critical"
+        self.notify_fn(severity, "automation",
                        f"{rule.get('name', rule['id'])}: " + "; ".join(summary))
+        return all_ok
 
     def _resolve(self, targets: Any) -> list[str]:
         if targets == "all":
@@ -422,48 +508,89 @@ class AutomationEngine:
             return [targets]
         return list(targets)
 
-    def _run_action(self, action: dict) -> str:
+    def _apply(self, device_id: str, values: dict) -> list[str]:
+        """Apply to one device; normalize the injected apply_fn's return into a
+        list of failed deviceIDs (it may return None, a list, or raise)."""
+        failed = self.apply_fn(device_id, dict(values))
+        if failed:
+            return list(failed) if not isinstance(failed, str) else [failed]
+        return []
+
+    def _run_action(self, action: dict) -> tuple[str, bool]:
         atype = action["type"]
 
         if atype == "set":
             ids = self._resolve(action.get("targets", "all"))
             values = action.get("values", {})
+            failed: list[str] = []
             for did in ids:
-                self.apply_fn(did, dict(values))
-            return f"set {len(ids)} zone(s) -> {self._short(values)}"
+                failed += self._apply(did, values)
+            ok = not failed
+            note = f"set {len(ids)} zone(s) -> {self._short(values)}"
+            if failed:
+                note += f" ({len(failed)} FAILED: {','.join(sorted(set(failed)))})"
+            return note, ok
 
         if atype == "snapshot":
             name = action["name"]
+            # Non-clobbering: if a snapshot under this name is already saved (an
+            # outage in progress), keep the original pre-outage capture so a
+            # retained "on" replay after a restart can't overwrite it with the
+            # already-shed state.
+            with self._lock:
+                existing = self._snapshots.get(name)
+            if existing:
+                return f"snapshot '{name}' kept ({len(existing)} zone(s) already captured)", True
             ids = self._resolve(action.get("targets", "all"))
             snap = {}
+            missing = []
             for did in ids:
                 cv = self.snapshot_read_fn(did)
                 if cv:
                     snap[did] = {k: cv.get(k) for k in _RESTORE_FIELDS if k in cv}
+                else:
+                    missing.append(did)
             with self._lock:
                 self._snapshots[name] = snap
             self._save_snapshots()
-            return f"snapshot '{name}' ({len(snap)} zone(s))"
+            if missing:
+                # Un-captured zones can't be restored later - make that visible now.
+                self.notify_fn("warning", "snapshot_incomplete",
+                               f"snapshot '{name}' could not capture {len(missing)} zone(s): "
+                               f"{','.join(sorted(missing))}")
+            ok = not missing
+            return f"snapshot '{name}' ({len(snap)} zone(s))" + (f", {len(missing)} MISSING" if missing else ""), ok
 
         if atype == "restore":
             name = action["name"]
             with self._lock:
                 snap = dict(self._snapshots.get(name, {}))
             if not snap:
-                return f"restore '{name}' (nothing saved)"
+                return f"restore '{name}' (nothing saved)", True
+            failed = []
             for did, values in snap.items():
-                self.apply_fn(did, dict(values))
-            return f"restore '{name}' ({len(snap)} zone(s))"
+                failed += self._apply(did, values)
+            if failed:
+                # Keep the snapshot so a re-fire can retry the zones that didn't restore.
+                self.notify_fn("critical", "restore_incomplete",
+                               f"restore '{name}': {len(failed)} zone(s) did not restore: "
+                               f"{','.join(sorted(set(failed)))}")
+                return f"restore '{name}' ({len(snap)} zone(s), {len(failed)} FAILED)", False
+            # Full success: clear the snapshot so the next outage captures fresh.
+            with self._lock:
+                self._snapshots.pop(name, None)
+            self._save_snapshots()
+            return f"restore '{name}' ({len(snap)} zone(s))", True
 
         if atype == "rotate":
-            return self._start_rotation(action)
+            return self._start_rotation(action), True
 
         if atype == "stop_rotation":
             rid = action["rotation_id"]
             self._stop_rotation(rid)
-            return f"stopped rotation '{rid}'"
+            return f"stopped rotation '{rid}'", True
 
-        return f"noop({atype})"
+        return f"noop({atype})", True
 
     @staticmethod
     def _short(values: dict) -> str:
@@ -480,7 +607,7 @@ class AutomationEngine:
 
     def _start_rotation(self, action: dict) -> str:
         rid = action.get("rotation_id") or ("rot-" + str(uuid.uuid4())[:6])
-        targets = self._resolve(action["targets"])
+        targets = _dedupe(self._resolve(action["targets"]))
         run_count = max(1, int(action.get("run_count", 1)))
         interval = max(MIN_ROTATION_MINUTES, int(action.get("interval_minutes", MIN_ROTATION_MINUTES)))
         on_values = action.get("on_values", {"mode": "Heat"})
@@ -493,7 +620,7 @@ class AutomationEngine:
                 "on_values": on_values, "off_values": off_values,
                 "index": 0, "current_on": set(), "job_id": f"rotation:{rid}",
             }
-        # First tick now (also persists state), then every interval.
+        # First tick now (drives the full desired state), then every interval.
         self._rotation_tick(rid)
         self._sched.add_job(
             self._rotation_tick, IntervalTrigger(minutes=interval),
@@ -501,50 +628,81 @@ class AutomationEngine:
         )
         return f"rotate '{rid}': {run_count}/{len(targets)} on, every {interval}m"
 
+    def _window_at(self, targets: list, run_count: int, index: int) -> list:
+        n = len(targets)
+        if n == 0:
+            return []
+        rc = min(max(1, run_count), n)
+        return [targets[(index + k) % n] for k in range(rc)]
+
     def _rotation_tick(self, rid: str) -> None:
+        """Advance the window one step and drive the full desired state."""
         with self._lock:
             state = self._rotations.get(rid)
             if not state:
                 return
-            targets = state["targets"]
-            n = len(targets)
-            if n == 0:
+            targets = list(state["targets"])
+            if not targets:
                 return
-            run_count = min(state["run_count"], n)
             idx = state["index"]
-            window = {targets[(idx + k) % n] for k in range(run_count)}
-            prev_on = state["current_on"]
-            state["current_on"] = window
-            state["index"] = (idx + 1) % n
+            window = self._window_at(targets, state["run_count"], idx)
+            state["index"] = (idx + 1) % len(targets)
+        self._drive_rotation(rid, window)
+
+    def _drive_rotation(self, rid: str, window: list) -> None:
+        """Command every rotation zone to its desired state: window -> on_values,
+        all other targets -> off_values. Driving the FULL state (not just believed
+        changes) guarantees at most run_count zones are ever energized even if one
+        drifted on or an earlier write failed."""
+        with self._lock:
+            state = self._rotations.get(rid)
+            if not state:
+                return
+            targets = list(state["targets"])
             on_values = dict(state["on_values"])
             off_values = dict(state["off_values"])
-
-        # Only flip devices whose membership changed (kind to the rate limit).
-        turn_on = window - prev_on
-        turn_off = prev_on - window
-        for did in turn_on:
-            self.apply_fn(did, dict(on_values))
-        for did in turn_off:
-            self.apply_fn(did, dict(off_values))
-        if turn_on or turn_off:
-            log.info("Rotation '%s': on=%s off=%s", rid, sorted(turn_on), sorted(turn_off))
-        # Persist the advanced window/index so a restart resumes where we left off.
+        window_set = set(window)
+        off_list = [d for d in targets if d not in window_set]
+        for did in window:
+            if not self._is_rotating(rid):   # a concurrent stop_rotation won -> bail
+                return
+            self._apply(did, on_values)
+        for did in off_list:
+            if not self._is_rotating(rid):
+                return
+            self._apply(did, off_values)
+        with self._lock:
+            state = self._rotations.get(rid)
+            if state is not None:
+                state["current_on"] = set(window)
+        if window or off_list:
+            log.info("Rotation '%s': on=%s off=%s", rid, sorted(window_set), sorted(off_list))
         self._save_rotations()
 
+    def _is_rotating(self, rid: str) -> bool:
+        with self._lock:
+            return rid in self._rotations
+
     def _resume_rotations(self) -> None:
-        """Re-arm interval jobs for rotations that were active before a restart.
-        Zones are already in their last-applied state, so we do NOT tick
-        immediately - we just keep advancing the window on schedule. The paired
-        'restore on utility' rule still stops the rotation when power returns."""
+        """Re-arm interval jobs for rotations that were active before a restart and
+        reconcile the physical state to the last-applied window (without advancing),
+        so a restart mid-outage can't leave more than run_count zones energized."""
         with self._lock:
             items = list(self._rotations.items())
         for rid, st in items:
+            interval = int(st.get("interval", MIN_ROTATION_MINUTES) or MIN_ROTATION_MINUTES)
             self._sched.add_job(
-                self._rotation_tick, IntervalTrigger(minutes=st["interval"]),
+                self._rotation_tick, IntervalTrigger(minutes=interval),
                 args=[rid], id=f"rotation:{rid}", replace_existing=True,
             )
-            log.info("Resumed rotation '%s' (every %dm, %d/%d running).",
-                     rid, st["interval"], len(st["current_on"]), len(st["targets"]))
+            window = list(st.get("current_on") or self._window_at(
+                list(st.get("targets", [])), int(st.get("run_count", 1) or 1), int(st.get("index", 0) or 0)))
+            log.info("Resumed rotation '%s' (every %dm, %d/%d running); reconciling.",
+                     rid, interval, len(window), len(st.get("targets", [])))
+            try:
+                self._drive_rotation(rid, window)
+            except Exception as exc:
+                log.error("Reconciling rotation '%s' on resume failed: %s", rid, exc)
 
     def _stop_rotation(self, rid: str) -> None:
         self._cancel_rotation_job(rid)
@@ -575,41 +733,49 @@ class AutomationEngine:
     # ------------------------------------------------------------ persistence
 
     def _load(self) -> None:
-        if self.rules_path.exists():
-            try:
-                for r in json.loads(self.rules_path.read_text()):
+        rules = load_json(self.rules_path)
+        if isinstance(rules, list):
+            loaded = 0
+            for r in rules:
+                try:
                     r = _normalize_rule(r)
+                    self._validate(r)
                     self._rules[r["id"]] = r
-                log.info("Loaded %d automation(s).", len(self._rules))
-            except (OSError, ValueError, KeyError) as exc:
-                log.warning("Could not load automations: %s", exc)
-        if self.snapshots_path.exists():
-            try:
-                self._snapshots = json.loads(self.snapshots_path.read_text())
-            except (OSError, ValueError) as exc:
-                log.warning("Could not load snapshots: %s", exc)
-        if self.trigger_state_path.exists():
-            try:
-                raw = json.loads(self.trigger_state_path.read_text())
-                # A retained message replayed after a restart then reads as
-                # "already seen", so an on_change rule won't spuriously re-fire.
-                for rid, st in raw.items():
-                    if isinstance(st, dict) and "conds" in st:
-                        self._cond_state[rid] = [tuple(c) if c is not None else None
-                                                 for c in st.get("conds", [])]
-                        self._last_overall[rid] = bool(st.get("overall", False))
-            except (OSError, ValueError, TypeError, IndexError) as exc:
-                log.warning("Could not load trigger state: %s", exc)
-        if self.rotations_path.exists():
-            try:
-                raw = json.loads(self.rotations_path.read_text())
-                for rid, st in raw.items():
-                    st["current_on"] = set(st.get("current_on", []))
-                    self._rotations[rid] = st
-                if self._rotations:
-                    log.info("Loaded %d active rotation(s) to resume.", len(self._rotations))
-            except (OSError, ValueError) as exc:
-                log.warning("Could not load rotations: %s", exc)
+                    loaded += 1
+                except (ValueError, TypeError, KeyError) as exc:
+                    log.warning("Skipping invalid automation %r: %s",
+                                (r or {}).get("id") if isinstance(r, dict) else r, exc)
+            log.info("Loaded %d automation(s).", loaded)
+
+        snaps = load_json(self.snapshots_path)
+        if isinstance(snaps, dict):
+            self._snapshots = snaps
+
+        raw = load_json(self.trigger_state_path)
+        if isinstance(raw, dict):
+            # A retained message replayed after a restart then reads as
+            # "already seen", so an on_change rule won't spuriously re-fire.
+            for rid, st in raw.items():
+                if isinstance(st, dict) and "conds" in st:
+                    self._cond_state[rid] = [list(c) if c is not None else None
+                                             for c in st.get("conds", [])]
+                    self._last_overall[rid] = bool(st.get("overall", False))
+
+        rots = load_json(self.rotations_path)
+        if isinstance(rots, dict):
+            for rid, st in rots.items():
+                if not isinstance(st, dict) or "targets" not in st:
+                    log.warning("Skipping malformed rotation %r on load.", rid)
+                    continue
+                st["current_on"] = set(st.get("current_on", []))
+                st.setdefault("index", 0)
+                st.setdefault("run_count", 1)
+                st.setdefault("interval", MIN_ROTATION_MINUTES)
+                st.setdefault("on_values", {"mode": "Heat"})
+                st.setdefault("off_values", {"mode": "Off"})
+                self._rotations[rid] = st
+            if self._rotations:
+                log.info("Loaded %d active rotation(s) to resume.", len(self._rotations))
 
     def _save_trigger_state(self) -> None:
         try:
@@ -617,19 +783,23 @@ class AutomationEngine:
                 data = {rid: {"conds": [list(c) if c is not None else None for c in state],
                               "overall": self._last_overall.get(rid, False)}
                         for rid, state in self._cond_state.items()}
-            self.trigger_state_path.write_text(json.dumps(data, default=str))
+            atomic_write_json(self.trigger_state_path, data, default=str)
         except OSError as exc:  # pragma: no cover
             log.error("Could not save trigger state: %s", exc)
 
     def _save(self) -> None:
         try:
-            self.rules_path.write_text(json.dumps(list(self._rules.values()), indent=2))
+            with self._lock:
+                data = list(self._rules.values())
+            atomic_write_json(self.rules_path, data, indent=2)
         except OSError as exc:  # pragma: no cover
             log.error("Could not save automations: %s", exc)
 
     def _save_snapshots(self) -> None:
         try:
-            self.snapshots_path.write_text(json.dumps(self._snapshots, indent=2))
+            with self._lock:
+                data = {name: dict(snap) for name, snap in self._snapshots.items()}
+            atomic_write_json(self.snapshots_path, data, indent=2)
         except OSError as exc:  # pragma: no cover
             log.error("Could not save snapshots: %s", exc)
 
@@ -643,6 +813,6 @@ class AutomationEngine:
                     d = dict(st)
                     d["current_on"] = sorted(st["current_on"])
                     data[rid] = d
-            self.rotations_path.write_text(json.dumps(data, indent=2))
+            atomic_write_json(self.rotations_path, data, indent=2)
         except OSError as exc:  # pragma: no cover
             log.error("Could not save rotations: %s", exc)
