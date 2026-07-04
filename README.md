@@ -9,7 +9,9 @@ Resideo API:
 2. **Scheduling** — application-level **daily programs** with as many timed periods
    as you like ("6am → 70°, noon → 66°, 6pm → 70°, 10pm → Off") that work across all
    your thermostats regardless of their own onboard schedules. One-tap ON / OFF /
-   Set-temperature presets, day-of-week selection, and in-place editing.
+   Set-temperature presets, day-of-week selection, and in-place editing. **Sole
+   Controller mode** (on by default) holds every zone under the app continuously so
+   the onboard/Resideo schedules never override it.
 3. **Automations** — an event-driven rules engine that reacts to **MQTT messages
    from your own broker**. The headline use case: when your generator's transfer
    switch reports it's carrying the load, shed non-critical zones and duty-cycle
@@ -235,17 +237,23 @@ once at startup, after the first poll — the app applies the program's
 currently-active period right away, so it owns the setpoints from that moment, not
 only at the next period boundary.
 
-**Disable the onboard schedule entirely (optional, for sole control).** Under
-**Schedules → Thermostat onboard schedules**, **Take over** a thermostat to cancel
-every period of its onboard schedule so nothing but this app drives it. The
-original is backed up first (`onboard_backup.json`) and **Restore onboard** puts it
-back. This writes to the physical thermostat and works on T-series/LCC units;
-round (TCC-) units don't expose an onboard schedule to disable.
+**Sole Controller mode makes it automatic (on by default).** Under **Schedules →
+Control mode**, Sole Controller mode keeps *every* zone under a permanent hold
+continuously: on each poll the app re-asserts a hold on any zone that isn't already
+held, so the thermostats' onboard schedules and the Resideo app never change a zone
+— with no per-device setup. It's on by default (`SOLE_CONTROLLER=true`) and can be
+toggled live from the dashboard (the choice is remembered across restarts). Per
+zone you can **Hold now** to take control immediately, or (with the mode off)
+**Release** a zone back to its onboard schedule.
+
+Takeover uses a permanent hold — a normal setpoint write that works on every unit —
+rather than editing the device's onboard schedule via Resideo's `/devices/schedule`
+endpoint, which returns 404 on LCC thermostats. A permanent hold suspends the
+onboard schedule just as effectively, so there's nothing to "disable" or restore.
 
 > This doesn't stop someone changing a thermostat directly in the Resideo app or at
-> the wall *between* periods — the app re-asserts on the next period, the next
-> program save, and at startup. Disabling the onboard schedule removes the device's
-> *automatic* competing changes.
+> the wall *between* polls — but with Sole Controller mode on, the next poll takes
+> the zone back (and a program, if one covers it, re-imposes its own setpoints).
 
 ---
 

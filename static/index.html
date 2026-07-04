@@ -566,14 +566,16 @@
       </div>
     </div>
 
-    <div class="sectitle">Thermostat onboard schedules</div>
+    <div class="sectitle">Control mode</div>
     <div class="card-lg">
-      <div class="desc">Make this app the single source of truth: disable a thermostat's
-        <em>own</em> onboard schedule (sets its schedule type to <b>None</b>) so nothing but
-        this app's programs and holds drive it. <b>Restore</b> switches the type back — but
-        Resideo doesn't expose the saved day/time periods, so if you ever revert you may need
-        to re-enter them in the Resideo app. Writes to the physical thermostat; T-series/LCC units.</div>
-      <div id="onboardList"></div>
+      <div class="brow" style="align-items:center;gap:12px;margin-bottom:6px">
+        <button class="toggle" id="soleToggle" role="switch" aria-checked="false" aria-label="Sole Controller mode" onclick="toggleSoleControl()"></button>
+        <div class="f grow" style="flex:3 1 240px">
+          <div style="font-weight:650">Sole Controller mode</div>
+          <div class="desc" id="soleDesc" style="margin:2px 0 0">Loading…</div>
+        </div>
+      </div>
+      <div id="onboardList" style="margin-top:6px"></div>
     </div>
   </section>
 
@@ -600,7 +602,7 @@ const TOKEN = new URLSearchParams(location.search).get("token") || "";
 const HDRS = TOKEN ? {"X-Token":TOKEN} : {};
 const qp = TOKEN ? ("?token="+encodeURIComponent(TOKEN)) : "";
 
-const state = { devices:[], pending:{}, autoStatus:{}, loaded:false, status:null };
+const state = { devices:[], pending:{}, autoStatus:{}, loaded:false, status:null, soleControl:true };
 
 /* ---------- inline icons ---------- */
 const IC = {
@@ -970,32 +972,51 @@ async function toggleRule(id,en){ try{
     await api("/api/schedules/"+id+"/enabled",{method:"POST",body:JSON.stringify({enabled:en})});
     loadSchedules(); }catch(e){ toast(e.message,true); } }
 
-/* onboard (device) schedule takeover */
+/* sole controller (takeover) */
 async function loadOnboard(){
   const c=document.getElementById("onboardList"); if(!c) return;
   try{
-    const r=await api("/api/onboard_schedule"); const taken=new Set(r.taken_over||[]);
+    const r=await api("/api/onboard_schedule");
+    const taken=new Set(r.taken_over||[]); const sole=!!r.sole_control;
+    state.soleControl=sole;
+    const tg=document.getElementById("soleToggle");
+    if(tg){ tg.classList.toggle("on",sole); tg.setAttribute("aria-checked",sole); }
+    const desc=document.getElementById("soleDesc");
+    if(desc) desc.textContent = sole
+      ? "ON — this app holds every zone under a permanent hold. The thermostats' onboard schedules and the Resideo app never change your zones; the app re-asserts control automatically on each poll."
+      : "OFF — zones may follow their own onboard/Resideo schedule. Turn on to make this app the single controller of every zone.";
     if(!state.devices.length){ c.innerHTML=`<div class="conds-empty">No zones yet — connect the account and wait for the first poll.</div>`; return; }
     c.innerHTML=state.devices.map(d=>{ const on=taken.has(d.deviceID);
+      const action = on
+        ? (sole ? `<span style="color:var(--faint);font-size:12px">held</span>`
+                : `<button class="btn sm" onclick="restoreOnboard('${d.deviceID}',this)">Release</button>`)
+        : `<button class="btn sm warm" onclick="disableOnboard('${d.deviceID}',this)">Hold now</button>`;
       return `<div class="brow" style="align-items:center">
-        <span class="badge ${on?'':'off'}" style="${on?'':'background:var(--surface-2);color:var(--muted)'}">${on?'APP IN CONTROL':'ONBOARD ACTIVE'}</span>
+        <span class="badge ${on?'':'off'}" style="${on?'':'background:var(--surface-2);color:var(--muted)'}">${on?'HELD BY APP':'NOT HELD'}</span>
         <div class="f grow" style="flex:3 1 200px"><span class="rname" style="font-weight:650">${esc(d.name)}</span> <span style="color:var(--faint);font-family:var(--mono);font-size:11px">${esc(d.deviceID)}</span></div>
-        ${on?`<button class="btn sm" onclick="restoreOnboard('${d.deviceID}',this)">Restore onboard</button>`
-             :`<button class="btn sm warm" onclick="disableOnboard('${d.deviceID}',this)">Take over</button>`}
+        ${action}
       </div>`; }).join("");
   }catch(e){}
 }
+async function toggleSoleControl(){
+  const next=!state.soleControl;
+  if(!next && !await confirmDialog("Turn off Sole Controller mode? Zones will be allowed to follow their own onboard/Resideo schedule again.","Turn off")) return;
+  try{
+    await api("/api/sole_control",{method:"POST",body:JSON.stringify({enabled:next})});
+    toast(next?"Sole Controller mode on — taking control of all zones":"Sole Controller mode off");
+    loadOnboard(); setTimeout(loadDevices,1500);
+  }catch(e){ toast("Couldn't change mode: "+e.message,true); }
+}
 async function disableOnboard(id,btn){
-  if(!await confirmDialog("Disable this thermostat's onboard schedule? This sets its schedule type to None so only this app drives it. You can re-enable the type later, but Resideo won't let us restore the exact day/time periods — you'd re-enter those in the Resideo app.","Take over")) return;
   try{ await withBusy(btn,()=>api("/api/devices/"+id+"/onboard_schedule/disable",{method:"POST"}));
-    toast("Onboard schedule disabled — app in control"); loadOnboard();
+    toast("App is now holding "+deviceName(id)); loadOnboard(); setTimeout(loadDevices,1200);
   }catch(e){ toast("Couldn't take over: "+e.message,true); }
 }
 async function restoreOnboard(id,btn){
-  if(!await confirmDialog("Restore this thermostat's original onboard schedule?","Restore")) return;
+  if(!await confirmDialog("Release this zone to its onboard schedule? While Sole Controller mode is on, the app will take it back on a later poll.","Release")) return;
   try{ await withBusy(btn,()=>api("/api/devices/"+id+"/onboard_schedule/restore",{method:"POST"}));
-    toast("Onboard schedule restored"); loadOnboard();
-  }catch(e){ toast("Couldn't restore: "+e.message,true); }
+    toast("Released "+deviceName(id)+" to its onboard schedule"); loadOnboard(); setTimeout(loadDevices,1200);
+  }catch(e){ toast("Couldn't release: "+e.message,true); }
 }
 
 /* ---------- alerts ---------- */
