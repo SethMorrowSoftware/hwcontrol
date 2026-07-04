@@ -59,20 +59,31 @@ also protects compressors from short-cycling).
 
 ## Quick start
 
-The fastest path — clone the repo and run the installer:
+The fastest path — clone the repo and run the guided installer:
 
 ```bash
 git clone https://github.com/SethMorrowSoftware/hwcontrol.git
 cd hwcontrol
-./install.sh                 # venv + deps + .env (with placeholder credentials)
-#   ...or run it as a boot service (needs root):
-sudo ./install.sh --systemd
+sudo ./install.sh            # recommended: also installs an always-on service
 ```
 
-`install.sh` is idempotent (safe to re-run), never overwrites an existing `.env`,
-and prints exactly what to do next. Then finish configuration: put your real
-credentials in `.env`, register the redirect URI, and authorize once (steps 2–3
-below).
+`install.sh` walks you through setup:
+
+- Creates the virtualenv and installs dependencies.
+- **Prompts for your Honeywell client ID / secret** and a few settings (web port,
+  MQTT, dashboard token), each with a sensible default — press Enter to keep it.
+  Defaults come from your existing `.env` if present, otherwise the placeholders,
+  so re-running never loses your answers. It writes `.env` with `600` permissions.
+- **When run with `sudo`, installs a `systemd` service** (`hwcontrol.service`) that
+  starts on boot and restarts on failure (`Restart=always`) — the reliable,
+  always-available setup. Run it **without** root to skip the service and just
+  build the venv + `.env` (add the service later with `sudo ./install.sh`).
+
+It's idempotent and safe to re-run. Flags: `--no-service`, `--yes`
+(non-interactive, accept defaults), `--user NAME`, `--name NAME`, `--help`.
+
+After it finishes: register the redirect URI it prints on the developer portal,
+then authorize once (`./.venv/bin/python authorize.py`).
 
 ### Manual setup
 
@@ -340,9 +351,9 @@ duty-cycle rotations, so they resume after a restart).
 
 ## Running as a service (systemd example)
 
-`sudo ./install.sh --systemd` generates and enables this unit for you (pointing at
-wherever you cloned the repo). The equivalent unit, if you'd rather write it by
-hand:
+`sudo ./install.sh` generates and enables this unit for you (pointing at wherever
+you cloned the repo, using the port from your `.env`). The equivalent unit, if
+you'd rather write it by hand:
 
 ```ini
 # /etc/systemd/system/hwcontrol.service
