@@ -59,6 +59,25 @@ also protects compressors from short-cycling).
 
 ## Quick start
 
+The fastest path — clone the repo and run the installer:
+
+```bash
+git clone https://github.com/SethMorrowSoftware/hwcontrol.git
+cd hwcontrol
+./install.sh                 # venv + deps + .env (with placeholder credentials)
+#   ...or run it as a boot service (needs root):
+sudo ./install.sh --systemd
+```
+
+`install.sh` is idempotent (safe to re-run), never overwrites an existing `.env`,
+and prints exactly what to do next. Then finish configuration: put your real
+credentials in `.env`, register the redirect URI, and authorize once (steps 2–3
+below).
+
+### Manual setup
+
+If you'd rather not use the installer:
+
 ```bash
 # 1. Install dependencies (Python 3.10+)
 python -m venv .venv && source .venv/bin/activate
@@ -320,6 +339,10 @@ duty-cycle rotations, so they resume after a restart).
 ---
 
 ## Running as a service (systemd example)
+
+`sudo ./install.sh --systemd` generates and enables this unit for you (pointing at
+wherever you cloned the repo). The equivalent unit, if you'd rather write it by
+hand:
 
 ```ini
 # /etc/systemd/system/hwcontrol.service
