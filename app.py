@@ -420,8 +420,10 @@ def api_disable_onboard(device_id: str):
     loc = store.location_of(device_id)
     if loc is None:
         raise HTTPException(404, f"Unknown device {device_id} (has it been polled yet?)")
+    cached = store.get(device_id)
+    stype = cached.get("scheduleType") if cached else None
     try:
-        schedule = client.get_schedule(device_id, loc)
+        schedule = client.get_schedule(device_id, loc, schedule_type=stype)
     except HoneywellError as exc:
         raise HTTPException(502, f"Couldn't read the onboard schedule (this device may not "
                                  f"support one): {exc}")
@@ -433,7 +435,7 @@ def api_disable_onboard(device_id: str):
         backup[device_id] = schedule
         _save_onboard_backup(backup)
     try:
-        client.set_schedule(device_id, loc, cancelled)
+        client.set_schedule(device_id, loc, cancelled, schedule_type=stype)
     except HoneywellError as exc:
         raise HTTPException(502, f"Couldn't write the onboard schedule: {exc}")
     notify("info", "onboard_schedule", f"Onboard schedule disabled for {device_id} "
@@ -453,8 +455,11 @@ def api_restore_onboard(device_id: str):
     original = backup.get(device_id)
     if original is None:
         raise HTTPException(404, "No saved onboard schedule to restore for this device.")
+    cached = store.get(device_id)
+    stype = (cached.get("scheduleType") if cached else None) or (
+        original.get("scheduleType") if isinstance(original, dict) else None)
     try:
-        client.set_schedule(device_id, loc, original)
+        client.set_schedule(device_id, loc, original, schedule_type=stype)
     except HoneywellError as exc:
         raise HTTPException(502, f"Couldn't restore the onboard schedule: {exc}")
     backup.pop(device_id, None)
