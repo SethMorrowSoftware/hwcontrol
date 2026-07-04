@@ -198,9 +198,13 @@ if want_service; then
     useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
   fi
   SERVICE_GROUP=$(id -gn "$SERVICE_USER")
-  # The working directory holds tokens.json and other runtime state, so it must
-  # be owned by the service account.
-  chown -R "$SERVICE_USER:$SERVICE_GROUP" "$SCRIPT_DIR"
+
+  # We deliberately do NOT chown the repo. The code stays owned by whoever cloned
+  # it, so `git pull` keeps working. The service instead runs from a private state
+  # directory (/var/lib/<name>, created and owned by systemd) and imports the code
+  # via PYTHONPATH. systemd reads the .env as root before dropping to the service
+  # account, so that account never needs to own or read repo files.
+  STATE_DIR="/var/lib/${SERVICE_NAME}"
 
   UNIT="${UNIT_DIR}/${SERVICE_NAME}.service"
   mkdir -p "$UNIT_DIR"
@@ -212,13 +216,17 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-WorkingDirectory=$SCRIPT_DIR
+User=$SERVICE_USER
+Group=$SERVICE_GROUP
+# Runtime state (tokens.json and the *.json files) lives here, owned by the
+# service account. systemd creates $STATE_DIR automatically on start.
+StateDirectory=${SERVICE_NAME}
+WorkingDirectory=$STATE_DIR
+Environment=PYTHONPATH=$SCRIPT_DIR
 EnvironmentFile=$SCRIPT_DIR/.env
 ExecStart=$SCRIPT_DIR/.venv/bin/uvicorn app:app --host $BIND_HOST --port $PORT
 Restart=always
 RestartSec=5
-User=$SERVICE_USER
-Group=$SERVICE_GROUP
 
 [Install]
 WantedBy=multi-user.target
@@ -244,27 +252,25 @@ printf '\n\033[1;32mSetup complete.\033[0m\n\n'
 PLACEHOLDER=0
 [ "$API_KEY" = "your-consumer-key-here" ] && PLACEHOLDER=1
 
-cat <<EOF
-Next steps:
-EOF
+echo "Next steps:"
 if [ "$PLACEHOLDER" -eq 1 ]; then
-  echo "  1. Add your real Honeywell client ID/secret (re-run this script, or edit .env)."
+  echo "  1. Add your real Honeywell client ID/secret - re-run 'sudo ./install.sh'"
+  echo "     and type them at the prompts, or edit .env directly (then restart)."
 else
   echo "  1. Credentials are set in .env."
 fi
-cat <<EOF
-  2. Register this redirect URI on https://developer.honeywellhome.com, exactly:
-       ${REDIRECT}
-  3. Authorize your Honeywell account once (opens a browser consent flow):
-       ./.venv/bin/python authorize.py
-EOF
+echo "  2. Register this redirect URI on https://developer.honeywellhome.com, exactly:"
+echo "       ${REDIRECT}"
 
 if want_service && [ -d /run/systemd/system ]; then
-  echo "  4. Already running as a service: browse to http://<this-host>:${PORT}"
+  echo "  3. The service is running and starts on boot. Open the dashboard and click"
+  echo "     \"Connect account\" to authorize Honeywell (one time):"
+  echo "       http://<this-host>:${PORT}"
+  echo "     After editing .env later, apply changes with: sudo systemctl restart ${SERVICE_NAME}"
 else
-  cat <<EOF
-  4. Start the dashboard:
-       ./.venv/bin/python -m uvicorn app:app --host ${BIND_HOST} --port ${PORT}
-     then open http://<this-host>:${PORT}
-EOF
+  echo "  3. Start the dashboard:"
+  echo "       ./.venv/bin/python -m uvicorn app:app --host ${BIND_HOST} --port ${PORT}"
+  echo "     then open http://<this-host>:${PORT}"
+  echo "  4. Authorize Honeywell once - click \"Connect account\" in the dashboard,"
+  echo "     or run:  ./.venv/bin/python authorize.py"
 fi
