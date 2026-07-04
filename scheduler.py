@@ -39,14 +39,16 @@ one-period program automatically on load and on create.
 from __future__ import annotations
 
 import datetime
-import json
 import logging
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Callable
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+
+from storage import atomic_write_json, load_json
 
 log = logging.getLogger("honeywell.scheduler")
 
@@ -89,15 +91,23 @@ class FacilityScheduler:
         self.apply_fn = apply_fn
         self.store_path = Path(store_path)
         self._rules: dict[str, dict] = {}
+        self._lock = threading.RLock()
         self._sched = BackgroundScheduler(timezone=timezone) if timezone else BackgroundScheduler()
         self._load()
 
     def start(self) -> None:
         self._sched.start()
-        for rule in self._rules.values():
+        with self._lock:
+            rules = list(self._rules.values())
+        for rule in rules:
             if rule.get("enabled", True):
-                self._schedule(rule)
-        log.info("Scheduler started with %d program(s).", len(self._rules))
+                # One bad rule must never stop the scheduler (and thus the whole
+                # app under systemd Restart=always) from starting.
+                try:
+                    self._schedule(rule)
+                except Exception as exc:
+                    log.error("Could not schedule program '%s': %s", rule.get("id"), exc)
+        log.info("Scheduler started with %d program(s).", len(rules))
 
     def stop(self) -> None:
         self._sched.shutdown(wait=False)
@@ -105,14 +115,16 @@ class FacilityScheduler:
     # ------------------------------------------------------------- rule CRUD
 
     def list_rules(self) -> list[dict]:
-        return list(self._rules.values())
+        with self._lock:
+            return list(self._rules.values())
 
     def add_rule(self, rule: dict) -> dict:
         rule = _normalize(rule)
         rule.setdefault("id", str(uuid.uuid4())[:8])
         rule.setdefault("enabled", True)
         self._validate(rule)
-        self._rules[rule["id"]] = rule
+        with self._lock:
+            self._rules[rule["id"]] = rule
         self._save()
         if rule["enabled"]:
             self._schedule(rule)
@@ -120,13 +132,16 @@ class FacilityScheduler:
         return rule
 
     def update_rule(self, rule_id: str, rule: dict) -> dict | None:
-        if rule_id not in self._rules:
-            return None
+        with self._lock:
+            if rule_id not in self._rules:
+                return None
+            prev_enabled = self._rules[rule_id].get("enabled", True)
         merged = _normalize(rule)
         merged["id"] = rule_id
-        merged.setdefault("enabled", self._rules[rule_id].get("enabled", True))
+        merged.setdefault("enabled", prev_enabled)
         self._validate(merged)
-        self._rules[rule_id] = merged
+        with self._lock:
+            self._rules[rule_id] = merged
         self._save()
         self._unschedule(rule_id)
         if merged["enabled"]:
@@ -135,19 +150,21 @@ class FacilityScheduler:
         return merged
 
     def remove_rule(self, rule_id: str) -> bool:
-        if rule_id not in self._rules:
-            return False
-        self._rules.pop(rule_id)
+        with self._lock:
+            if rule_id not in self._rules:
+                return False
+            self._rules.pop(rule_id)
         self._unschedule(rule_id)
         self._save()
         log.info("Removed schedule program '%s'", rule_id)
         return True
 
     def set_enabled(self, rule_id: str, enabled: bool) -> bool:
-        rule = self._rules.get(rule_id)
-        if not rule:
-            return False
-        rule["enabled"] = enabled
+        with self._lock:
+            rule = self._rules.get(rule_id)
+            if not rule:
+                return False
+            rule["enabled"] = enabled
         self._save()
         self._unschedule(rule_id)
         if enabled:
@@ -157,11 +174,19 @@ class FacilityScheduler:
     # ------------------------------------------------------------- internals
 
     def _validate(self, rule: dict) -> None:
+        rid = rule.get("id")
+        if rid is not None and "#" in str(rid):
+            # '#' is our job-id separator; an id containing it corrupts _unschedule.
+            raise ValueError("rule id must not contain '#'")
         periods = rule.get("periods")
         if not isinstance(periods, list) or not periods:
             raise ValueError("a program needs at least one time period")
+        seen_times = set()
         for p in periods:
-            _valid_hhmm(p.get("time"))
+            hhmm = _valid_hhmm(p.get("time"))
+            if hhmm in seen_times:
+                raise ValueError(f"duplicate period time {p.get('time')} in one program")
+            seen_times.add(hhmm)
             if not isinstance(p.get("action"), dict) or not p.get("action"):
                 raise ValueError("each period needs an action")
         days = rule.get("days")
@@ -172,9 +197,15 @@ class FacilityScheduler:
 
     def _trigger(self, time_str: str, days) -> CronTrigger:
         hour, minute = _valid_hhmm(time_str)
-        kwargs = {"hour": hour, "minute": minute}
+        kwargs: dict[str, Any] = {"hour": hour, "minute": minute}
         if days:
             kwargs["day_of_week"] = ",".join(str(d).lower() for d in days)
+        # Pin the trigger to the scheduler's timezone. A bare CronTrigger defaults
+        # to the *host* zone, which silently diverges from _active_period (which
+        # uses the scheduler tz) whenever SCHEDULE_TZ differs from the host clock.
+        tz = getattr(self._sched, "timezone", None)
+        if tz is not None:
+            kwargs["timezone"] = tz
         return CronTrigger(**kwargs)
 
     def _job_id(self, rule_id: str, idx: int) -> str:
@@ -200,17 +231,21 @@ class FacilityScheduler:
                     pass
 
     def _run_period(self, rule_id: str, idx: int) -> None:
-        rule = self._rules.get(rule_id)
-        if not rule or not rule.get("enabled", True):
-            return
+        with self._lock:
+            rule = self._rules.get(rule_id)
+            if not rule or not rule.get("enabled", True):
+                return
+            try:
+                period = rule["periods"][idx]
+            except (IndexError, KeyError):
+                return
+            targets = rule.get("targets", "all")
+            action = dict(period.get("action") or {})
+            name = rule.get("name")
+            time_str = period.get("time")
+        log.info("Running schedule '%s' period %s (%s @ %s)", rule_id, idx, name, time_str)
         try:
-            period = rule["periods"][idx]
-        except (IndexError, KeyError):
-            return
-        log.info("Running schedule '%s' period %s (%s @ %s)",
-                 rule_id, idx, rule.get("name"), period.get("time"))
-        try:
-            self.apply_fn(rule.get("targets", "all"), period["action"])
+            self.apply_fn(targets, action)
         except Exception as exc:
             log.error("Schedule '%s' period %s failed: %s", rule_id, idx, exc)
 
@@ -254,15 +289,21 @@ class FacilityScheduler:
     def apply_active_now(self, rule_id: str) -> bool:
         """Apply the program's currently-active period right now, so it takes
         control immediately on create/edit (not only at the next boundary)."""
-        rule = self._rules.get(rule_id)
-        if not rule or not rule.get("enabled", True):
+        with self._lock:
+            rule = self._rules.get(rule_id)
+            if not rule or not rule.get("enabled", True):
+                return False
+            rule = dict(rule)
+        try:
+            period = self._active_period(rule, self._now())
+        except ValueError as exc:
+            log.error("Program '%s' has a bad period time: %s", rule_id, exc)
             return False
-        period = self._active_period(rule, self._now())
         if not period:
             return False
         log.info("Asserting program '%s' active period (%s).", rule_id, period.get("time"))
         try:
-            self.apply_fn(rule.get("targets", "all"), period["action"])
+            self.apply_fn(rule.get("targets", "all"), dict(period.get("action") or {}))
             return True
         except Exception as exc:
             log.error("Asserting program '%s' failed: %s", rule_id, exc)
@@ -271,25 +312,39 @@ class FacilityScheduler:
     def apply_all_active_now(self) -> None:
         """Re-assert every enabled program's active period (used once at startup
         so the app owns the setpoints as soon as devices are known)."""
-        for rid in list(self._rules):
+        with self._lock:
+            ids = list(self._rules)
+        for rid in ids:
             self.apply_active_now(rid)
 
     # ------------------------------------------------------------ persistence
 
     def _load(self) -> None:
-        if not self.store_path.exists():
+        data = load_json(self.store_path)
+        if data is None:
             return
-        try:
-            data = json.loads(self.store_path.read_text())
-            for rule in data:
-                rule = _normalize(rule)
-                self._rules[rule["id"]] = rule
-            log.info("Loaded %d schedule program(s).", len(self._rules))
-        except (OSError, ValueError, KeyError) as exc:
-            log.warning("Could not load schedules: %s", exc)
+        if not isinstance(data, list):
+            log.warning("schedules.json is not a list; ignoring.")
+            return
+        loaded = 0
+        for raw in data:
+            try:
+                rule = _normalize(raw)
+                rule.setdefault("id", str(uuid.uuid4())[:8])
+                rule.setdefault("enabled", True)
+                self._validate(rule)   # skip malformed rules instead of crashing at start()
+            except (ValueError, TypeError, KeyError) as exc:
+                log.warning("Skipping invalid schedule program %r: %s",
+                            (raw or {}).get("id") if isinstance(raw, dict) else raw, exc)
+                continue
+            self._rules[rule["id"]] = rule
+            loaded += 1
+        log.info("Loaded %d schedule program(s).", loaded)
 
     def _save(self) -> None:
         try:
-            self.store_path.write_text(json.dumps(list(self._rules.values()), indent=2))
+            with self._lock:
+                data = list(self._rules.values())
+            atomic_write_json(self.store_path, data, indent=2)
         except OSError as exc:  # pragma: no cover
             log.error("Could not save schedules: %s", exc)

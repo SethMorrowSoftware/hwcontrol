@@ -15,7 +15,9 @@ and thermostats so you can confirm everything works end to end.
 
 from __future__ import annotations
 
+import html
 import logging
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -34,10 +36,18 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         if "code" in q:
             self.server.auth_code = q["code"][0]
+            self.server.got_redirect = True
             self.wfile.write(b"<h3>Authorized. You can close this tab and return to the terminal.</h3>")
+        elif "error" in q:
+            err = q["error"][0]
+            self.server.auth_error = err
+            self.server.got_redirect = True
+            # Escape the (attacker-influenceable) error value before reflecting it.
+            self.wfile.write(f"<h3>Authorization failed: {html.escape(err)}</h3>".encode())
         else:
-            err = q.get("error", ["unknown"])[0]
-            self.wfile.write(f"<h3>Authorization failed: {err}</h3>".encode())
+            # Not the OAuth redirect (favicon, port scanner, health check, ...).
+            # Don't consume our single-use auth code on it - keep waiting.
+            self.wfile.write(b"<h3>Waiting for the OAuth redirect...</h3>")
 
     def log_message(self, *a):
         return
@@ -60,11 +70,27 @@ def main():
     print("Opening browser to authorize... if it doesn't open, visit:\n", url, "\n")
     webbrowser.open(url)
 
-    httpd = HTTPServer(("", port), _Handler)
+    # Bind loopback only: the auth code is single-use, so anything else on the
+    # network hitting this port first could eat it (or feed us a bogus ?error=).
+    httpd = HTTPServer(("127.0.0.1", port), _Handler)
+    httpd.timeout = 5  # seconds per handle_request(), so we can re-check the deadline
     httpd.auth_code = None
-    print(f"Waiting for the redirect on port {port} ...")
-    httpd.handle_request()
+    httpd.auth_error = None
+    httpd.got_redirect = False
 
+    print(f"Waiting for the redirect on 127.0.0.1:{port} ...")
+    # Loop until the genuine redirect (carrying ?code= or ?error=) arrives instead
+    # of accepting the first arbitrary GET, but give up after a bounded wait.
+    deadline = time.monotonic() + 300
+    while not httpd.got_redirect and time.monotonic() < deadline:
+        httpd.handle_request()
+
+    if not httpd.got_redirect:
+        print("Timed out waiting for the OAuth redirect. Check the redirect URI match and try again.")
+        return
+    if httpd.auth_error:
+        print(f"Authorization failed: {httpd.auth_error}")
+        return
     if not httpd.auth_code:
         print("No authorization code received. Check the redirect URI match and try again.")
         return

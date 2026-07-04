@@ -62,20 +62,44 @@ die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # Make sure the service account can actually reach and run the app. A system user
 # usually can't traverse a home directory (mode 0750), which makes systemd fail
-# with status=203/EXEC. Grant traverse (o+x, not read) on each ancestor it can't
-# enter, and make the venv readable/executable.
+# with status=203/EXEC. Grant traverse on each ancestor it can't enter, and make
+# the venv readable/executable.
+#
+# Preferred: a scoped POSIX ACL that grants ONLY the service user (setfacl). This
+# does not touch the "other" permission bits, so unrelated local users gain no new
+# access. Fallback (only if setfacl is missing): the old chmod o+x / o+rX, which
+# widens access to EVERY local user - we warn loudly when we have to do that.
 ensure_service_access() {
   local user="$1" d="$SCRIPT_DIR"
-  while [ "$d" != "/" ]; do
-    if ! runuser -u "$user" -- test -x "$d" 2>/dev/null; then
-      chmod o+x "$d"
-      log "Granted traverse (o+x) on $d so '$user' can reach the app."
+  if command -v setfacl >/dev/null 2>&1; then
+    while [ "$d" != "/" ]; do
+      if ! runuser -u "$user" -- test -x "$d" 2>/dev/null; then
+        setfacl -m u:"$user":x "$d"
+        log "Granted traverse (ACL u:$user:x) on $d so '$user' can reach the app."
+      fi
+      d=$(dirname "$d")
+    done
+    if ! runuser -u "$user" -- test -x "$SCRIPT_DIR/.venv/bin/uvicorn" 2>/dev/null; then
+      setfacl -R -m u:"$user":rX "$SCRIPT_DIR/.venv"
+      # Best-effort default ACL so files added later (e.g. a re-run's pip) inherit
+      # the grant; never abort the install if the FS can't store default ACLs.
+      setfacl -R -d -m u:"$user":rX "$SCRIPT_DIR/.venv" 2>/dev/null || true
+      log "Adjusted .venv ACLs so '$user' can run it (scoped to that user)."
     fi
-    d=$(dirname "$d")
-  done
-  if ! runuser -u "$user" -- test -x "$SCRIPT_DIR/.venv/bin/uvicorn" 2>/dev/null; then
-    chmod -R o+rX "$SCRIPT_DIR/.venv"
-    log "Adjusted .venv permissions so '$user' can run it."
+  else
+    warn "setfacl not found - falling back to chmod, which grants access to ALL local users, not just '$user'."
+    warn "For a scoped grant, install the 'acl' package (e.g. sudo apt install acl) or relocate the repo to /opt, then re-run."
+    while [ "$d" != "/" ]; do
+      if ! runuser -u "$user" -- test -x "$d" 2>/dev/null; then
+        chmod o+x "$d"
+        log "Granted traverse (o+x, world-wide) on $d so '$user' can reach the app."
+      fi
+      d=$(dirname "$d")
+    done
+    if ! runuser -u "$user" -- test -x "$SCRIPT_DIR/.venv/bin/uvicorn" 2>/dev/null; then
+      chmod -R o+rX "$SCRIPT_DIR/.venv"
+      log "Adjusted .venv permissions (world-readable) so '$user' can run it."
+    fi
   fi
 }
 
@@ -228,6 +252,7 @@ if want_service; then
     chown "$(stat -c '%U' "$SCRIPT_DIR"):$SERVICE_GROUP" "$SCRIPT_DIR/.env" 2>/dev/null \
       || chgrp "$SERVICE_GROUP" "$SCRIPT_DIR/.env" 2>/dev/null || true
     chmod 640 "$SCRIPT_DIR/.env"
+    log ".env permissions set to 640 (owner rw, group '$SERVICE_GROUP' read) so the service account can read it."
   fi
 
   # We deliberately do NOT chown the repo. The code stays owned by whoever cloned
@@ -237,6 +262,19 @@ if want_service; then
   # account, so that account never needs to own or read repo files.
   STATE_DIR="/var/lib/${SERVICE_NAME}"
 
+  # Validate PORT/HOST before embedding them (unquoted) in ExecStart, so a stray
+  # value can't inject extra arguments into the uvicorn command line.
+  case "$PORT" in
+    ''|*[!0-9]*) die "Invalid PORT '$PORT': must be an integer between 1 and 65535." ;;
+  esac
+  if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+    die "Invalid PORT '$PORT': must be an integer between 1 and 65535."
+  fi
+  case "$BIND_HOST" in
+    -*) die "Invalid HOST '$BIND_HOST': must not start with '-' (would look like a flag)." ;;
+    ''|*[![:alnum:].:_-]*) die "Invalid HOST '$BIND_HOST': expected a bare hostname or IP address (no spaces or flags)." ;;
+  esac
+
   UNIT="${UNIT_DIR}/${SERVICE_NAME}.service"
   mkdir -p "$UNIT_DIR"
   log "Writing $UNIT ..."
@@ -245,6 +283,10 @@ if want_service; then
 Description=Facility Thermostat Dashboard (hwcontrol)
 After=network-online.target
 Wants=network-online.target
+# Stop retrying if it can't stay up (e.g. .env missing credentials -> SystemExit),
+# instead of crash-looping forever every RestartSec seconds.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 User=$SERVICE_USER
@@ -258,6 +300,19 @@ EnvironmentFile=$SCRIPT_DIR/.env
 ExecStart=$SCRIPT_DIR/.venv/bin/uvicorn app:app --host $BIND_HOST --port $PORT
 Restart=always
 RestartSec=5
+# --- Sandboxing ---
+NoNewPrivileges=true
+ProtectSystem=strict
+# read-only (not 'true'): 'true' mounts an empty tmpfs over /home, which would
+# HIDE the app's own code when the repo lives in a home dir (the layout this
+# installer supports) - and a tmpfs can't be re-exposed by ReadOnlyPaths. 'read-only'
+# keeps home readable but not writable, so the service can still import its code.
+ProtectHome=read-only
+PrivateTmp=true
+# ProtectSystem=strict makes the filesystem read-only; keep the StateDirectory
+# writable for the JSON state, and (belt and suspenders) mark the code read-only.
+ReadOnlyPaths=$SCRIPT_DIR
+ReadWritePaths=$STATE_DIR
 
 [Install]
 WantedBy=multi-user.target

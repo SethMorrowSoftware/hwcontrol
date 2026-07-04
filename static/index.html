@@ -454,6 +454,7 @@
 
 <main id="main">
   <div id="authBanner"></div>
+  <div id="pollBanner"></div>
 
   <section class="view active" id="view-zones" role="tabpanel" aria-labelledby="tab-zones" tabindex="0">
     <div class="grid" id="zoneGrid"></div>
@@ -598,11 +599,29 @@
 </dialog>
 
 <script>
-const TOKEN = new URLSearchParams(location.search).get("token") || "";
+/* Read the dashboard token from the URL (the OAuth callback lands with ?token=)
+   or from localStorage, persist it, then strip it from the visible address bar so
+   it isn't left sitting in history/screenshots. Thereafter it travels only in the
+   X-Token header on API fetches (app.py accepts either header or ?token=). */
+const TOKEN = (function(){
+  let t="";
+  try{ t = new URLSearchParams(location.search).get("token") || ""; }catch(e){}
+  if(t){
+    try{ localStorage.setItem("hw-token", t); }catch(e){}
+    try{ const u=new URL(location.href); u.searchParams.delete("token");
+      history.replaceState(null,"",u.pathname+(u.search||"")+(u.hash||"")); }catch(e){}
+  }else{
+    try{ t = localStorage.getItem("hw-token") || ""; }catch(e){ t=""; }
+  }
+  return t;
+})();
 const HDRS = TOKEN ? {"X-Token":TOKEN} : {};
+/* Only used for full-page navigations (the OAuth login link), which can't send a
+   header. All fetch()es use the X-Token header instead. */
 const qp = TOKEN ? ("?token="+encodeURIComponent(TOKEN)) : "";
 
-const state = { devices:[], pending:{}, autoStatus:{}, loaded:false, status:null, soleControl:true };
+const state = { devices:[], pending:{}, autoStatus:{}, loaded:false, status:null,
+  soleControl:true, devicesTs:null };
 
 /* ---------- inline icons ---------- */
 const IC = {
@@ -626,14 +645,33 @@ function setOnline(v){
   if(v===online) return; online=v;
   document.getElementById("connState").classList.toggle("show",!v);
 }
+/* Typed error so callers can distinguish an HTTP failure (and its status) from a
+   plain thrown string. A non-2xx response is a failure, not a success. */
+class ApiError extends Error{ constructor(msg,status){ super(msg); this.name="ApiError"; this.status=status; } }
 async function api(path, opts={}){
   const o = Object.assign({headers:Object.assign({"Content-Type":"application/json"},HDRS)}, opts);
   let r;
-  try{ r = await fetch(path+qp, o); }
-  catch(e){ setOnline(false); throw new Error("Network error — is the server reachable?"); }
+  try{ r = await fetch(path, o); }
+  catch(e){ setOnline(false); throw new ApiError("Network error — is the server reachable?",0); }
+  if(!r.ok){
+    // A non-2xx status is a degraded/offline signal — do NOT let stale cards keep
+    // masquerading as live by silently treating this as success.
+    setOnline(false);
+    let m; try{ const j=await r.json(); m=j.detail||j.error||r.statusText; }catch(e){ m=r.statusText; }
+    if(r.status===401) m="Unauthorized — dashboard token required or invalid.";
+    throw new ApiError(m, r.status);
+  }
   setOnline(true);
-  if(!r.ok){ let m; try{m=(await r.json()).detail||r.statusText}catch{m=r.statusText} throw new Error(m); }
   return r.status===204 ? null : r.json();
+}
+/* Show/clear the "live data may be stale" banner when the last poll cycle failed. */
+function setPollHealth(ok, msg){
+  const b=document.getElementById("pollBanner"); if(!b) return;
+  if(ok){ b.innerHTML=""; return; }
+  b.innerHTML=`<div class="banner" style="border-left-color:var(--crit)">
+    <span class="b-ic" style="background:var(--crit-soft);color:var(--crit)">${IC.warning}</span>
+    <div style="flex:1"><div class="b-title">Live data may be stale</div>
+      <div class="b-sub">${esc(msg||"The last update from the server failed — the cards below show the last known values, not live readings.")}</div></div></div>`;
 }
 function toast(msg, err=false){
   const t=document.getElementById("toast");
@@ -655,6 +693,10 @@ function ago(ts){ if(!ts) return "never";
 /* Escape values that come from device names, alerts, or operator-typed rules/topics. */
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,
   c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+/* Escape a value that is interpolated into a single-quoted JS string inside an inline
+   onclick="..." attribute. JS-string-escape first (backslash + quote), then HTML-escape
+   for the attribute — so device IDs/modes can't break out of the handler (latent XSS). */
+function jsAttr(s){ return esc(String(s==null?"":s).replace(/\\/g,"\\\\").replace(/'/g,"\\'")); }
 
 /* ---------- theme ---------- */
 function currentTheme(){ return document.documentElement.getAttribute("data-theme")||"dark"; }
@@ -708,32 +750,48 @@ function modeClass(d){ if(!d.online) return "offline";
   const m=(d.mode||"").toLowerCase();
   return m==="heat"?"mode-heat":m==="cool"?"mode-cool":m==="auto"?"mode-auto":""; }
 
+/* Track dirtiness PER FIELD (a Set of "mode"/"heat"/"cool"/"hold"). On each poll we
+   refresh every field the operator has NOT edited from the live device, and pin only
+   the fields they actually touched — so a background change to an untouched field
+   (scheduler/load-shed setback) is no longer masked and reverted on Apply. */
 function ensurePending(d){
-  const p=state.pending[d.deviceID];
-  if(!p || !p.dirty){
-    state.pending[d.deviceID]={mode:d.mode,heat:d.heatSetpoint,cool:d.coolSetpoint,
-      hold:d.setpointStatus||"TemporaryHold",dirty:p?p.dirty:false};
-  }
-  return state.pending[d.deviceID];
+  let p=state.pending[d.deviceID];
+  const live={mode:d.mode,heat:d.heatSetpoint,cool:d.coolSetpoint,hold:d.setpointStatus||"TemporaryHold"};
+  if(!p){ p=state.pending[d.deviceID]=Object.assign({dirty:new Set()},live); return p; }
+  if(!(p.dirty instanceof Set)) p.dirty=new Set();   // migrate any legacy shape
+  if(!p.dirty.has("mode")) p.mode=live.mode;
+  if(!p.dirty.has("heat")) p.heat=live.heat;
+  if(!p.dirty.has("cool")) p.cool=live.cool;
+  if(!p.dirty.has("hold")) p.hold=live.hold;
+  return p;
 }
 function clamp(v,lo,hi){ if(lo!=null&&v<lo)v=lo; if(hi!=null&&v>hi)v=hi; return v; }
 function step(id,key,delta){
-  const p=state.pending[id]; if(p[key]==null)p[key]=70;
+  const p=state.pending[id]; if(!p) return; if(p[key]==null)p[key]=70;
   const d=state.devices.find(x=>x.deviceID===id)||{};
-  const lo = key==="heat"?d.minHeatSetpoint:d.minCoolSetpoint;
-  const hi = key==="heat"?d.maxHeatSetpoint:d.maxCoolSetpoint;
+  let lo = key==="heat"?d.minHeatSetpoint:d.minCoolSetpoint;
+  let hi = key==="heat"?d.maxHeatSetpoint:d.maxCoolSetpoint;
+  // Absolute fallback bounds so steppers stay bounded when the device reports no min/max.
+  if(lo==null) lo=40; if(hi==null) hi=95;
   p[key]=clamp(Math.round(p[key]+delta),lo,hi);
-  p.dirty=true; renderZones();
+  p.dirty.add(key); renderZones();
 }
-function setMode(id,m){ state.pending[id].mode=m; state.pending[id].dirty=true; renderZones(); }
-function setHold(id,v){ state.pending[id].hold=v; state.pending[id].dirty=true; }
+function setMode(id,m){ const p=state.pending[id]; if(!p) return; p.mode=m; p.dirty.add("mode"); renderZones(); }
+function setHold(id,v){ const p=state.pending[id]; if(!p) return; p.hold=v; p.dirty.add("hold"); renderZones(); }
 
 async function applyZone(id,btn){
-  const p=state.pending[id];
-  const body={mode:p.mode,heatSetpoint:p.heat,coolSetpoint:p.cool,thermostatSetpointStatus:p.hold};
+  const p=state.pending[id]; if(!p) return;
+  // Send ONLY the fields the operator actually changed; omit untouched/null fields
+  // entirely so we never push a stale setpoint back over a background change.
+  const body={};
+  if(p.dirty.has("mode")&&p.mode!=null) body.mode=p.mode;
+  if(p.dirty.has("heat")&&p.heat!=null) body.heatSetpoint=p.heat;
+  if(p.dirty.has("cool")&&p.cool!=null) body.coolSetpoint=p.cool;
+  if(p.dirty.has("hold")&&p.hold!=null) body.thermostatSetpointStatus=p.hold;
+  if(!Object.keys(body).length){ toast("No changes to apply"); return; }
   try{
     await withBusy(btn,()=>api("/api/devices/"+id+"/set",{method:"POST",body:JSON.stringify(body)}));
-    p.dirty=false; toast("Applied to "+deviceName(id)); loadDevices();
+    p.dirty.clear(); toast("Applied to "+deviceName(id)); loadDevices();
   }catch(e){ toast("Couldn't apply: "+e.message,true); }
 }
 function resetZone(id){ delete state.pending[id]; renderZones(); }
@@ -772,9 +830,13 @@ function renderZones(){
   grid.innerHTML="";
   for(const d of state.devices){
     const p=ensurePending(d);
+    const off = !d.online;                 // lock controls (not just dim) when offline
+    const dis = off?" disabled":"";
+    const did = jsAttr(d.deviceID);        // safe inside single-quoted inline onclick
+    const soleNo = state.soleControl;      // sole control re-holds any NoHold on next poll
     const modes = (d.allowedModes&&d.allowedModes.length)?d.allowedModes:["Heat","Cool","Off"];
     const card=document.createElement("div");
-    card.className="card "+modeClass(d)+(p.dirty?" dirty":"");
+    card.className="card "+modeClass(d)+(p.dirty.size?" dirty":"");
     const temp = d.indoorTemperature!=null?Math.round(d.indoorTemperature):"–";
     const unit = (d.units||"F").charAt(0);
     const meta=[];
@@ -783,7 +845,7 @@ function renderZones(){
     if(d.scheduleStatus) meta.push(`<span class="m">${esc(d.scheduleStatus)}</span>`);
     card.innerHTML = `
       <div class="chead">
-        <div><div class="cname">${esc(d.name)}</div><div class="cid">${esc(d.deviceID)}</div></div>
+        <div><div class="cname">${esc(d.name)}</div><div class="cid">${esc(d.deviceID)}${state.devicesTs?` · <span class="stale" data-since="${state.devicesTs}">as of ${esc(ago(state.devicesTs))}</span>`:''}</div></div>
         <span class="badge ${d.online?'':'off'}"><span class="dot ${d.online?'on':'off'}"></span>${d.online?'ONLINE':'OFFLINE'}</span>
       </div>
       <div class="readout">
@@ -791,29 +853,30 @@ function renderZones(){
         <div class="meta">${meta.join("<br>")||"&nbsp;"}</div>
       </div>
       <div class="modes" role="group" aria-label="Mode for ${esc(d.name)}">${modes.map(m=>
-        `<button class="chip ${p.mode===m?'sel':''}" data-mode="${m}" aria-pressed="${p.mode===m}" onclick="setMode('${d.deviceID}','${m}')">${m}</button>`).join("")}</div>
+        `<button class="chip ${p.mode===m?'sel':''}" data-mode="${esc(m)}" aria-pressed="${p.mode===m}"${dis} onclick="setMode('${did}','${jsAttr(m)}')">${esc(m)}</button>`).join("")}</div>
       <div class="sp">
         <div class="spbox heat"><div class="lbl">Heat</div>
           <div class="stepper">
-            <button aria-label="Lower heat setpoint" onclick="step('${d.deviceID}','heat',-1)">−</button>
+            <button aria-label="Lower heat setpoint"${dis} onclick="step('${did}','heat',-1)">−</button>
             <span class="val">${p.heat!=null?p.heat:'–'}°</span>
-            <button aria-label="Raise heat setpoint" onclick="step('${d.deviceID}','heat',1)">+</button></div></div>
+            <button aria-label="Raise heat setpoint"${dis} onclick="step('${did}','heat',1)">+</button></div></div>
         <div class="spbox cool"><div class="lbl">Cool</div>
           <div class="stepper">
-            <button aria-label="Lower cool setpoint" onclick="step('${d.deviceID}','cool',-1)">−</button>
+            <button aria-label="Lower cool setpoint"${dis} onclick="step('${did}','cool',-1)">−</button>
             <span class="val">${p.cool!=null?p.cool:'–'}°</span>
-            <button aria-label="Raise cool setpoint" onclick="step('${d.deviceID}','cool',1)">+</button></div></div>
+            <button aria-label="Raise cool setpoint"${dis} onclick="step('${did}','cool',1)">+</button></div></div>
       </div>
       <div class="field sel">
-        <select aria-label="Hold mode for ${esc(d.name)}" onchange="setHold('${d.deviceID}',this.value)">
+        <select aria-label="Hold mode for ${esc(d.name)}"${dis} onchange="setHold('${did}',this.value)">
           <option value="TemporaryHold" ${p.hold==='TemporaryHold'?'selected':''}>Hold until next schedule</option>
           <option value="PermanentHold" ${p.hold==='PermanentHold'?'selected':''}>Permanent hold</option>
-          <option value="NoHold" ${p.hold==='NoHold'?'selected':''}>Resume schedule</option>
+          <option value="NoHold" ${p.hold==='NoHold'?'selected':''}${soleNo?' disabled':''}>Resume schedule${soleNo?' (sole control on)':''}</option>
         </select>
       </div>
+      ${soleNo?`<div style="font-size:11px;color:var(--warn);margin-top:6px">Sole Controller is on — “Resume schedule” is re-asserted as a hold on the next poll.</div>`:''}
       <div class="apply">
-        <button class="btn ${modeClass(d)==='mode-heat'?'warm':'primary'}" onclick="applyZone('${d.deviceID}',this)">Apply changes</button>
-        ${p.dirty?`<button class="btn ghost" onclick="resetZone('${d.deviceID}')">Reset</button>`:''}
+        <button class="btn ${modeClass(d)==='mode-heat'?'warm':'primary'}"${dis} onclick="applyZone('${did}',this)">Apply changes</button>
+        ${p.dirty.size?`<button class="btn ghost" onclick="resetZone('${did}')">Reset</button>`:''}
       </div>`;
     grid.appendChild(card);
   }
@@ -822,10 +885,16 @@ function renderZones(){
 async function loadDevices(){
   try{
     const r=await api("/api/devices"); state.devices=r.devices||[]; state.loaded=true;
+    state.devicesTs=Math.floor(Date.now()/1000);   // last-good update time for staleness
+    setPollHealth(true);
     renderZones(); populateTargets();
     const sig=state.devices.map(d=>d.deviceID).sort().join("|");
     if(sig!==state.pickerSig){ state.pickerSig=sig; populatePickers(); loadOnboard(); }
-  }catch(e){ if(!state.loaded){ state.loaded=true; renderZones(); } }
+  }catch(e){
+    // Don't let stale cards look live: surface the failure and keep the last-good age.
+    setPollHealth(false, e.status===401 ? e.message : ("Couldn't refresh zones — "+e.message));
+    if(!state.loaded){ state.loaded=true; renderZones(); }
+  }
 }
 
 /* ---------- schedules (daily programs) ---------- */
@@ -833,6 +902,7 @@ const DAYS=["mon","tue","wed","thu","fri","sat","sun"];
 let selDays=new Set();
 let progPeriods=[];        // [{time,mode,heat,cool,hold}]
 let editingProgram=null;   // rule id while editing
+let editProgramTargets=null; // original multi-zone target array while editing (single-select can't hold it)
 
 function renderDayPicker(){
   const c=document.getElementById("p-days"); if(!c) return; c.innerHTML="";
@@ -844,7 +914,11 @@ function renderDayPicker(){
 }
 function populateTargets(){
   const sel=document.getElementById("p-target"); if(!sel) return; const cur=sel.value;
-  sel.innerHTML='<option value="all">All zones</option>'+
+  // When editing a program that targets several specific zones, keep a synthetic
+  // option so a background poll's re-populate can't collapse it to one zone.
+  const multi = (editProgramTargets && editProgramTargets.length>1)
+    ? `<option value="__multi">Multiple zones (${editProgramTargets.length}) — keep as set</option>` : "";
+  sel.innerHTML=multi+'<option value="all">All zones</option>'+
     state.devices.map(d=>`<option value="${esc(d.deviceID)}">${esc(d.name)}</option>`).join("");
   sel.value=cur||"all";
 }
@@ -917,8 +991,9 @@ async function loadSchedules(){
   }catch(e){}
 }
 function resetProgramForm(){
-  editingProgram=null; selDays=new Set(); progPeriods=[];
+  editingProgram=null; editProgramTargets=null; selDays=new Set(); progPeriods=[];
   const nm=document.getElementById("p-name"); if(nm)nm.value="";
+  populateTargets();   // rebuild options (drops any leftover "__multi")
   const t=document.getElementById("p-target"); if(t)t.value="all";
   document.getElementById("progFormTitle").textContent="New program";
   document.getElementById("p-save").textContent="Create program";
@@ -929,9 +1004,12 @@ function editProgram(id){
   const r=(state.schedules||[]).find(x=>x.id===id); if(!r) return;
   editingProgram=id;
   document.getElementById("p-name").value=r.name||"";
+  // Preserve a multi-zone target set instead of collapsing it to the first zone.
+  editProgramTargets=(Array.isArray(r.targets)&&r.targets.length>1)?r.targets.slice():null;
   populateTargets();
   const t=document.getElementById("p-target");
-  t.value = Array.isArray(r.targets) ? (r.targets[0]||"all") : (r.targets||"all");
+  t.value = editProgramTargets ? "__multi"
+    : (Array.isArray(r.targets) ? (r.targets[0]||"all") : (r.targets||"all"));
   selDays=new Set((r.days||[]).map(d=>String(d).toLowerCase()));
   progPeriods=(r.periods||[]).map(p=>{ const a=p.action||{};
     return {time:p.time,mode:a.mode||'',heat:a.heatSetpoint??'',cool:a.coolSetpoint??'',hold:a.thermostatSetpointStatus||'PermanentHold'}; });
@@ -943,7 +1021,9 @@ function editProgram(id){
 }
 async function saveProgram(btn){
   const name=(document.getElementById("p-name").value.trim())||"Program";
-  const target=document.getElementById("p-target").value;
+  const sel=document.getElementById("p-target").value;
+  // "__multi" means the operator left the preserved multi-zone target set untouched.
+  const target = (sel==="__multi" && editProgramTargets) ? editProgramTargets : sel;
   if(!progPeriods.length){ toast("Add at least one period",true); return; }
   const periods=[];
   for(const p of progPeriods){
@@ -978,7 +1058,10 @@ async function loadOnboard(){
   try{
     const r=await api("/api/onboard_schedule");
     const taken=new Set(r.taken_over||[]); const sole=!!r.sole_control;
+    const soleChanged = state.soleControl!==sole;
     state.soleControl=sole;
+    // Keep the zone cards' NoHold warning/disable in step with the live sole-control state.
+    if(soleChanged && state.loaded && state.devices.length) renderZones();
     const tg=document.getElementById("soleToggle");
     if(tg){ tg.classList.toggle("on",sole); tg.setAttribute("aria-checked",sole); }
     const desc=document.getElementById("soleDesc");
@@ -986,11 +1069,11 @@ async function loadOnboard(){
       ? "ON — this app holds every zone under a permanent hold. The thermostats' onboard schedules and the Resideo app never change your zones; the app re-asserts control automatically on each poll."
       : "OFF — zones may follow their own onboard/Resideo schedule. Turn on to make this app the single controller of every zone.";
     if(!state.devices.length){ c.innerHTML=`<div class="conds-empty">No zones yet — connect the account and wait for the first poll.</div>`; return; }
-    c.innerHTML=state.devices.map(d=>{ const on=taken.has(d.deviceID);
+    c.innerHTML=state.devices.map(d=>{ const on=taken.has(d.deviceID); const did=jsAttr(d.deviceID);
       const action = on
         ? (sole ? `<span style="color:var(--faint);font-size:12px">held</span>`
-                : `<button class="btn sm" onclick="restoreOnboard('${d.deviceID}',this)">Release</button>`)
-        : `<button class="btn sm warm" onclick="disableOnboard('${d.deviceID}',this)">Hold now</button>`;
+                : `<button class="btn sm" onclick="restoreOnboard('${did}',this)">Release</button>`)
+        : `<button class="btn sm warm" onclick="disableOnboard('${did}',this)">Hold now</button>`;
       return `<div class="brow" style="align-items:center">
         <span class="badge ${on?'':'off'}" style="${on?'':'background:var(--surface-2);color:var(--muted)'}">${on?'HELD BY APP':'NOT HELD'}</span>
         <div class="f grow" style="flex:3 1 200px"><span class="rname" style="font-weight:650">${esc(d.name)}</span> <span style="color:var(--faint);font-family:var(--mono);font-size:11px">${esc(d.deviceID)}</span></div>
@@ -1131,10 +1214,19 @@ async function delAuto(id,btn){
   try{ await withBusy(btn,()=>api("/api/automations/"+id,{method:"DELETE"})); toast("Automation deleted"); loadAutomations(); }
   catch(e){ toast(e.message,true); }
 }
-async function runAuto(id,btn){ try{
-  await withBusy(btn,()=>api("/api/automations/"+id+"/run",{method:"POST"}));
-  toast("Ran automation"); setTimeout(loadDevices,1200); setTimeout(loadAutomations,1200);
-  }catch(e){ toast("Couldn't run: "+e.message,true); } }
+async function runAuto(id,btn){
+  // "Run now" executes the rule's live actions immediately. Confirm first when any
+  // action changes zones (set/rotate/stop_rotation) — it sits next to Edit/Delete.
+  const rule=(state.autos||[]).find(x=>x.id===id);
+  const destructive=((rule&&rule.actions)||[]).some(a=>["set","rotate","stop_rotation"].includes(a.type));
+  if(destructive && !await confirmDialog(
+      "Run “"+((rule&&rule.name)||id)+"” now? This immediately changes live zones "+
+      "(shed / rotate / stop rotation), not a test.","Run now")) return;
+  try{
+    await withBusy(btn,()=>api("/api/automations/"+id+"/run",{method:"POST"}));
+    toast("Ran automation"); setTimeout(loadDevices,1200); setTimeout(loadAutomations,1200);
+  }catch(e){ toast("Couldn't run: "+e.message,true); }
+}
 
 async function postRule(rule){ return api("/api/automations",{method:"POST",body:JSON.stringify(rule)}); }
 
@@ -1152,6 +1244,14 @@ async function createGeneratorRules(btn){
   const hasRot=rotate==="all"||(Array.isArray(rotate)&&rotate.length);
   if(!topic){ toast("Enter the generator topic",true); return; }
   if(!hasShed&&!hasRot){ toast("Pick at least one zone to shed or rotate",true); return; }
+  // Validate the rotate numbers BEFORE posting: a blank/0 "how many run at once"
+  // (Number("")===0) would shed every critical zone at once — frozen-pipe risk.
+  if(hasRot){
+    if(!Number.isFinite(run)||run<1){ toast("“How many rotate at once” must be at least 1",true); return; }
+    if(!Number.isFinite(interval)||interval<5){ toast("Rotate interval must be at least 5 minutes",true); return; }
+    if(!Number.isFinite(heat)||heat<40||heat>95){ toast("Heat setpoint must be between 40 and 95°",true); return; }
+    if(!Number.isFinite(cool)||cool<40||cool>95){ toast("Cool setpoint must be between 40 and 95°",true); return; }
+  }
 
   let snapTargets="all";
   if(shed!=="all"&&rotate!=="all") snapTargets=[...new Set([...(Array.isArray(shed)?shed:[]),...(Array.isArray(rotate)?rotate:[])])];
@@ -1220,16 +1320,22 @@ function addDraftAction(){
   if(t==="set"){ a.targets=readPicker("a-set-tgt"); const v={};
     const m=document.getElementById("a-mode").value; if(m)v.mode=m;
     const h=document.getElementById("a-hold").value; if(h)v.thermostatSetpointStatus=h;
-    const hs=num("a-heat"); if(hs!=null)v.heatSetpoint=hs;
-    const cs=num("a-cool"); if(cs!=null)v.coolSetpoint=cs; a.values=v;
+    const hs=num("a-heat"); if(hs!=null){ if(hs<40||hs>95){ toast("Heat setpoint must be between 40 and 95°",true); return; } v.heatSetpoint=hs; }
+    const cs=num("a-cool"); if(cs!=null){ if(cs<40||cs>95){ toast("Cool setpoint must be between 40 and 95°",true); return; } v.coolSetpoint=cs; } a.values=v;
     if(!a.targets.length&&a.targets!=="all"){ toast("Pick zones for the set action",true); return; } }
   else if(t==="rotate"){ a.targets=readPicker("a-rot-tgt");
     a.rotation_id=document.getElementById("a-rid").value.trim();
     a.run_count=Number(document.getElementById("a-run").value);
     a.interval_minutes=Number(document.getElementById("a-int").value);
-    a.on_values={mode:"Heat",heatSetpoint:num("a-onheat"),thermostatSetpointStatus:"PermanentHold"};
-    a.off_values={mode:"Off"};
-    if(!a.targets.length&&a.targets!=="all"){ toast("Pick zones for rotation",true); return; } }
+    const onheat=num("a-onheat");
+    if(!a.targets.length&&a.targets!=="all"){ toast("Pick zones for rotation",true); return; }
+    if(!a.rotation_id){ toast("Enter a rotation id",true); return; }
+    // Guard the rotate numbers — a blank/0 run_count would shed every zone at once.
+    if(!Number.isFinite(a.run_count)||a.run_count<1){ toast("“Run at once” must be at least 1",true); return; }
+    if(!Number.isFinite(a.interval_minutes)||a.interval_minutes<5){ toast("Interval must be at least 5 minutes",true); return; }
+    if(onheat!=null&&(onheat<40||onheat>95)){ toast("Heat setpoint must be between 40 and 95°",true); return; }
+    a.on_values={mode:"Heat",heatSetpoint:onheat,thermostatSetpointStatus:"PermanentHold"};
+    a.off_values={mode:"Off"}; }
   else if(t==="snapshot"){ a.targets=readPicker("a-snap-tgt"); a.name=document.getElementById("a-snap").value.trim(); }
   else if(t==="restore"){ a.name=document.getElementById("a-rsnap").value.trim();
     if(!a.name){ toast("Enter a snapshot name",true); return; } }
@@ -1357,8 +1463,21 @@ document.getElementById("a-add").onclick=addDraftAction;
 document.getElementById("c-create").onclick=function(){ saveAuto(this); };
 document.getElementById("c-cancel").onclick=resetAutoForm;
 
-function tick(){ document.getElementById("clock").textContent=
-  new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); }
+function tick(){
+  document.getElementById("clock").textContent=
+    new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  // Keep every "as of Ns ago" staleness badge live, even while polls are failing.
+  document.querySelectorAll("[data-since]").forEach(el=>{
+    el.textContent="as of "+ago(Number(el.dataset.since)); });
+}
+
+/* One poll cycle with an in-flight guard so slow/hung fetches don't stack up. */
+let pollBusy=false;
+async function pollCycle(){
+  if(pollBusy) return; pollBusy=true;
+  try{ await Promise.allSettled([refreshStatus(),loadDevices(),loadAlerts(),loadAutomations()]); }
+  finally{ pollBusy=false; }
+}
 
 /* ---------- boot ---------- */
 paintThemeBtn();
@@ -1368,7 +1487,7 @@ resetProgramForm();       // day picker + empty periods
 resetAutoForm();          // one blank condition + empty actions
 tick(); setInterval(tick,1000);
 refreshStatus(); loadDevices(); loadSchedules(); loadAlerts(); loadAutomations();
-setInterval(()=>{ refreshStatus(); loadDevices(); loadAlerts(); loadAutomations(); }, 10000);
+setInterval(pollCycle, 10000);
 setInterval(loadSchedules, 30000);
 </script>
 </body>
