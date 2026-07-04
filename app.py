@@ -372,6 +372,19 @@ def api_add_schedule(rule: dict = Body(...)):
     return {"ok": True, "rule": created}
 
 
+@app.put("/api/schedules/{rule_id}")
+def api_update_schedule(rule_id: str, rule: dict = Body(...)):
+    if not scheduler:
+        raise HTTPException(503, "Scheduler not ready")
+    try:
+        updated = scheduler.update_rule(rule_id, rule)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    if updated is None:
+        raise HTTPException(404, "No such rule")
+    return {"ok": True, "rule": updated}
+
+
 @app.delete("/api/schedules/{rule_id}")
 def api_delete_schedule(rule_id: str):
     if not scheduler:
@@ -413,6 +426,19 @@ def api_add_automation(rule: dict = Body(...)):
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return {"ok": True, "rule": created}
+
+
+@app.put("/api/automations/{rule_id}")
+def api_update_automation(rule_id: str, rule: dict = Body(...)):
+    if not engine:
+        raise HTTPException(503, "Automation engine not ready")
+    try:
+        updated = engine.update_rule(rule_id, rule)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    if updated is None:
+        raise HTTPException(404, "No such automation")
+    return {"ok": True, "rule": updated}
 
 
 @app.delete("/api/automations/{rule_id}")

@@ -6,9 +6,10 @@ Resideo API:
 
 1. **Control** — see every zone's temperature, humidity, and online status; change
    mode, heat/cool setpoints, holds, and fan from one screen.
-2. **Scheduling** — application-level schedules ("every weekday at 6pm, set the
-   warehouse to 62°F") that work across all your thermostats regardless of their
-   own onboard schedules.
+2. **Scheduling** — application-level **daily programs** with as many timed periods
+   as you like ("6am → 70°, noon → 66°, 6pm → 70°, 10pm → Off") that work across all
+   your thermostats regardless of their own onboard schedules. One-tap ON / OFF /
+   Set-temperature presets, day-of-week selection, and in-place editing.
 3. **Automations** — an event-driven rules engine that reacts to **MQTT messages
    from your own broker**. The headline use case: when your generator's transfer
    switch reports it's carrying the load, shed non-critical zones and duty-cycle
@@ -143,9 +144,10 @@ on an air-gapped LAN) that polls the local API every ~10s. Four tabs:
   heat/cool steppers, hold selector, and Apply. Changes you're typing are preserved
   across background refreshes until you Apply or discard.
 - **Automations** — the generator load-shed setup, a live status strip (active
-  rotations, saved snapshots, MQTT connection), the list of rules, and a custom
-  rule builder. Details below.
-- **Schedules** — time-of-day rules with day-of-week pickers.
+  rotations, saved snapshots, MQTT connection), the list of rules (editable), and a
+  custom multi-condition (AND/OR) rule builder. Details below.
+- **Schedules** — daily programs: pick a target and days, then add timed periods
+  (ON / OFF / temperature changes) with one-tap presets. Programs are editable.
 - **Alerts** — a feed of offline/again events, out-of-range temperatures, and a log
   of every automation action taken.
 
@@ -204,10 +206,14 @@ genuine transition to "off" still stops the rotation and triggers the restore.
 
 ## Automations — the rule model
 
-An automation is: **one trigger** (an MQTT topic + a match condition) and **an
-ordered list of actions**. Rules are stored in `automations.json`.
+An automation is: **a trigger** (one or more conditions combined with AND/OR) and
+**an ordered list of actions**. Rules are stored in `automations.json`, and can be
+edited in place from the dashboard (Automations → **Edit**).
 
 ### Trigger matching
+
+A trigger has a `mode` (`all` = AND, `any` = OR) and a list of `conditions`. Each
+condition watches one topic:
 
 | Match type   | Fires when…                                              |
 |--------------|----------------------------------------------------------|
@@ -216,17 +222,24 @@ ordered list of actions**. Rules are stored in `automations.json`.
 | `contains`   | payload contains the value as a substring                |
 | `regex`      | payload matches the regular expression                   |
 | `gt` / `lt`  | payload (as a number) is greater / less than the value   |
+| `between`    | payload (as a number) is within `value`…`value2` (inclusive) |
 | `any`        | any message on the topic                                 |
 
-If **`field`** is set, the payload is parsed as JSON and that dot-path is extracted
-first, then the match is applied to the extracted value (e.g. `field: "load.pct"`,
-type `gt`, value `85`).
+Each condition remembers the last message seen on its topic, so a multi-topic
+rule (e.g. "generator is on **AND** load > 85%") fires when the whole combination
+is true — even though the two facts arrive in separate messages. If **`field`** is
+set, the payload is parsed as JSON and that dot-path is extracted first (e.g.
+`field: "load.pct"`, type `gt`, value `85`).
 
 **`retrigger`** controls repeats:
-- `on_change` (default) — fire only on the *rising edge* into a matching value.
-  Republished/retained duplicates of the same value are ignored. This is what you
-  want for a generator status that gets re-announced periodically.
+- `on_change` (default) — fire only on the *rising edge* into the true state.
+  Republished/retained duplicates are ignored, and it re-arms once the combination
+  goes false again. This is what you want for a generator status that gets
+  re-announced periodically.
 - `every_message` — fire on every matching message.
+
+> Single-condition rules from earlier versions (`trigger.topic` + `trigger.match`)
+> are migrated to the one-condition shape automatically on load.
 
 ### Action types
 
@@ -245,20 +258,25 @@ each tick, to stay kind to the rate limit.
 
 ### Custom rules
 
-**Automations → Build a custom rule** exposes all of the above: pick a topic and
-match, then add actions one at a time (each with its own zone picker and
-parameters). Use this to react to anything your broker publishes — a load
-percentage crossing a threshold, a demand-response signal, a BMS mode change, etc.
+**Automations → Build a custom rule** exposes all of the above: choose AND/OR, add
+one or more conditions (each with its own topic, matcher, and optional JSON field),
+then add actions one at a time (each with its own zone picker and parameters). Use
+this to react to anything your broker publishes — a load percentage crossing a
+threshold, a demand-response signal combined with a temperature band, a BMS mode
+change, etc. Existing rules can be edited in place with **Edit**.
 
 ### Example rule (JSON)
 
 ```json
 {
-  "name": "High load: shed warehouse",
+  "name": "Generator on AND high load: shed warehouse",
   "enabled": true,
   "trigger": {
-    "topic": "facility/power/load",
-    "match": { "type": "gt", "value": 85, "field": "pct" },
+    "mode": "all",
+    "conditions": [
+      { "topic": "facility/generator/status", "type": "equals", "value": "on" },
+      { "topic": "facility/power/load", "type": "gt", "value": 85, "field": "pct" }
+    ],
     "retrigger": "on_change"
   },
   "actions": [

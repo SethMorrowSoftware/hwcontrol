@@ -12,19 +12,24 @@ power returns, we restore every zone to exactly how it was before.
 
 ------------------------------------------------------------------ rule shape
 
+A rule has a trigger (one or more conditions combined with AND/OR) and an ordered
+list of actions:
+
 {
   "id": "gen-on",
   "name": "Generator start: shed and rotate",
   "enabled": true,
   "trigger": {
-    "topic": "facility/generator/status",       # exact MQTT topic to watch
-    "match": {                                   # how to decide a message matches
-      "type": "equals",                          # equals|not_equals|contains|regex|gt|lt|any
-      "value": "on",
-      "field": null,                             # optional JSON dot-path (e.g. "power.source")
-      "ignore_case": true
-    },
-    "retrigger": "on_change"                     # on_change (edge) | every_message
+    "mode": "all",                               # all = AND, any = OR
+    "conditions": [
+      { "topic": "facility/generator/status",    # MQTT topic to watch
+        "type": "equals",                        # equals|not_equals|contains|regex|gt|lt|between|any
+        "value": "on",
+        "value2": null,                          # upper bound for "between"
+        "field": null,                           # optional JSON dot-path (e.g. "power.source")
+        "ignore_case": true }
+    ],
+    "retrigger": "on_change"                      # on_change (edge) | every_message
   },
   "actions": [
     { "type": "snapshot", "name": "pre_gen", "targets": "all" },
@@ -37,10 +42,13 @@ power returns, we restore every zone to exactly how it was before.
   ]
 }
 
-Paired "power restored" rule:
-  trigger match value "off"; actions:
-    { "type": "stop_rotation", "rotation_id": "critical" },
-    { "type": "restore", "name": "pre_gen" }
+A rule fires when its condition combination becomes true: with mode "all" every
+condition must currently match (each condition remembers the last message seen on
+its topic); with mode "any" a single matching condition is enough. "on_change"
+fires on the rising edge into true; "every_message" fires on each matching message.
+
+Legacy rules using a single {"topic", "match": {...}} trigger are migrated to the
+one-condition shape automatically.
 
 ------------------------------------------------------------------ action types
 
@@ -86,6 +94,28 @@ MIN_ROTATION_MINUTES = 5
 _RESTORE_FIELDS = ("mode", "heatSetpoint", "coolSetpoint",
                    "thermostatSetpointStatus", "autoChangeoverActive")
 
+_MATCH_TYPES = ("equals", "not_equals", "contains", "regex", "gt", "lt", "between", "any")
+_ACTION_TYPES = ("set", "snapshot", "restore", "rotate", "stop_rotation")
+
+
+def _normalize_rule(rule: dict) -> dict:
+    """Return a copy of `rule` with a conditions[] trigger, migrating a legacy
+    single {topic, match} trigger into a one-condition rule."""
+    rule = dict(rule)
+    trig = dict(rule.get("trigger") or {})
+    if "conditions" not in trig:
+        match = dict(trig.get("match") or {})
+        cond = {"topic": trig.get("topic")}
+        cond.update(match)
+        trig = {"mode": "all", "conditions": [cond],
+                "retrigger": trig.get("retrigger", "on_change")}
+    trig.setdefault("mode", "all")
+    trig.setdefault("retrigger", "on_change")
+    trig.pop("topic", None)
+    trig.pop("match", None)
+    rule["trigger"] = trig
+    return rule
+
 
 class AutomationEngine:
     def __init__(
@@ -115,7 +145,8 @@ class AutomationEngine:
         self._rules: dict[str, dict] = {}
         self._snapshots: dict[str, dict[str, dict]] = {}   # name -> {deviceID: changeableValues}
         self._rotations: dict[str, dict] = {}              # rotation_id -> runtime state
-        self._last_match: dict[str, tuple] = {}            # rule_id -> (matched, value)
+        self._cond_state: dict[str, list] = {}             # rule_id -> [[matched, value] | None, ...]
+        self._last_overall: dict[str, bool] = {}           # rule_id -> last combined result
         self._last_fired: dict[str, float] = {}            # rule_id -> ts
 
         self._sched = BackgroundScheduler()
@@ -135,8 +166,14 @@ class AutomationEngine:
 
     def subscribed_topics(self) -> set[str]:
         with self._lock:
-            return {r["trigger"]["topic"] for r in self._rules.values()
-                    if r.get("enabled", True) and r.get("trigger", {}).get("topic")}
+            topics: set[str] = set()
+            for r in self._rules.values():
+                if not r.get("enabled", True):
+                    continue
+                for cond in r.get("trigger", {}).get("conditions", []):
+                    if cond.get("topic"):
+                        topics.add(cond["topic"])
+            return topics
 
     # ------------------------------------------------------------- rule CRUD
 
@@ -145,25 +182,49 @@ class AutomationEngine:
             return list(self._rules.values())
 
     def add_rule(self, rule: dict) -> dict:
-        rule = dict(rule)
+        rule = _normalize_rule(rule)
         rule.setdefault("id", "auto-" + str(uuid.uuid4())[:6])
         rule.setdefault("enabled", True)
         self._validate(rule)
         with self._lock:
             self._rules[rule["id"]] = rule
-            self._last_match.pop(rule["id"], None)
+            self._cond_state.pop(rule["id"], None)
+            self._last_overall.pop(rule["id"], None)
         self._save()
         if self.on_topics_changed:
             self.on_topics_changed()
-        log.info("Added automation '%s' watching %s", rule["id"], rule["trigger"]["topic"])
+        log.info("Added automation '%s' (%d condition(s))",
+                 rule["id"], len(rule["trigger"]["conditions"]))
         return rule
+
+    def update_rule(self, rule_id: str, rule: dict) -> dict | None:
+        with self._lock:
+            exists = rule_id in self._rules
+            prev_enabled = self._rules.get(rule_id, {}).get("enabled", True)
+        if not exists:
+            return None
+        merged = _normalize_rule(rule)
+        merged["id"] = rule_id
+        merged.setdefault("enabled", prev_enabled)
+        self._validate(merged)
+        with self._lock:
+            self._rules[rule_id] = merged
+            # A changed trigger should re-evaluate from a clean slate.
+            self._cond_state.pop(rule_id, None)
+            self._last_overall.pop(rule_id, None)
+        self._save()
+        if self.on_topics_changed:
+            self.on_topics_changed()
+        log.info("Updated automation '%s'", rule_id)
+        return merged
 
     def remove_rule(self, rule_id: str) -> bool:
         with self._lock:
             if rule_id not in self._rules:
                 return False
             self._rules.pop(rule_id)
-            self._last_match.pop(rule_id, None)
+            self._cond_state.pop(rule_id, None)
+            self._last_overall.pop(rule_id, None)
         self._save()
         if self.on_topics_changed:
             self.on_topics_changed()
@@ -182,25 +243,36 @@ class AutomationEngine:
 
     def _validate(self, rule: dict) -> None:
         trig = rule.get("trigger") or {}
-        if not trig.get("topic"):
-            raise ValueError("trigger.topic is required")
-        match = trig.get("match") or {}
-        mtype = match.get("type", "equals")
-        if mtype not in ("equals", "not_equals", "contains", "regex", "gt", "lt", "any"):
-            raise ValueError(f"unknown match type '{mtype}'")
-        if mtype in ("equals", "not_equals", "contains", "regex", "gt", "lt") and "value" not in match:
-            raise ValueError(f"match type '{mtype}' needs a value")
-        if mtype == "regex":
-            try:
-                re.compile(str(match["value"]))
-            except re.error as exc:
-                raise ValueError(f"invalid regex: {exc}")
+        if trig.get("mode", "all") not in ("all", "any"):
+            raise ValueError("trigger.mode must be 'all' or 'any'")
+        conditions = trig.get("conditions")
+        if not isinstance(conditions, list) or not conditions:
+            raise ValueError("at least one trigger condition is required")
+        for c in conditions:
+            if not c.get("topic"):
+                raise ValueError("each condition needs a topic")
+            mtype = c.get("type", "equals")
+            if mtype not in _MATCH_TYPES:
+                raise ValueError(f"unknown match type '{mtype}'")
+            if mtype in ("equals", "not_equals", "contains", "regex", "gt", "lt", "between") \
+                    and "value" not in c:
+                raise ValueError(f"match type '{mtype}' needs a value")
+            if mtype == "between":
+                try:
+                    float(c["value"]); float(c.get("value2"))
+                except (TypeError, ValueError):
+                    raise ValueError("'between' needs numeric value and value2")
+            if mtype == "regex":
+                try:
+                    re.compile(str(c["value"]))
+                except re.error as exc:
+                    raise ValueError(f"invalid regex: {exc}")
         actions = rule.get("actions")
         if not isinstance(actions, list) or not actions:
             raise ValueError("at least one action is required")
         for a in actions:
             at = a.get("type")
-            if at not in ("set", "snapshot", "restore", "rotate", "stop_rotation"):
+            if at not in _ACTION_TYPES:
                 raise ValueError(f"unknown action type '{at}'")
             if at == "rotate":
                 if not a.get("targets"):
@@ -221,41 +293,55 @@ class AutomationEngine:
         """Called by the MQTT bridge for every message on a subscribed trigger topic."""
         with self._lock:
             candidates = [r for r in self._rules.values()
-                          if r.get("enabled", True) and r["trigger"]["topic"] == topic]
+                          if r.get("enabled", True)
+                          and any(c.get("topic") == topic for c in r["trigger"]["conditions"])]
         for rule in candidates:
             try:
-                self._evaluate(rule, payload)
+                self._evaluate(rule, topic, payload)
             except Exception as exc:
                 log.error("Automation '%s' failed: %s", rule.get("id"), exc)
                 self.notify_fn("critical", "automation_error",
                                f"Automation '{rule.get('name', rule.get('id'))}' failed: {exc}")
 
-    def _evaluate(self, rule: dict, payload: str) -> None:
-        matched, value = self._match(rule["trigger"].get("match", {}), payload)
+    def _evaluate(self, rule: dict, topic: str, payload: str) -> None:
         rid = rule["id"]
-        prev = self._last_match.get(rid)
-        self._last_match[rid] = (matched, value)
+        trig = rule["trigger"]
+        conditions = trig["conditions"]
+        with self._lock:
+            state = self._cond_state.get(rid)
+            if not state or len(state) != len(conditions):
+                state = [None] * len(conditions)
+            # Update every condition that watches the topic this message arrived on.
+            for i, cond in enumerate(conditions):
+                if cond.get("topic") == topic:
+                    matched, value = self._match(cond, payload)
+                    state[i] = [matched, value]
+            mode = trig.get("mode", "all")
+            seen = [s for s in state if s is not None]
+            if mode == "any":
+                overall = any(s[0] for s in seen)
+            else:  # all
+                overall = len(seen) == len(conditions) and all(s[0] for s in state)
+            prev = self._last_overall.get(rid, False)
+            self._cond_state[rid] = state
+            self._last_overall[rid] = overall
         self._save_trigger_state()
 
-        retrigger = rule["trigger"].get("retrigger", "on_change")
-        if not matched:
+        if not overall:
             return
-        if retrigger == "on_change":
-            # Fire only on a rising edge into this matching value (avoids thrashing
-            # when the source republishes the same status repeatedly).
-            if prev is not None and prev[0] and prev[1] == value:
-                return
+        if trig.get("retrigger", "on_change") == "on_change" and prev:
+            return  # already true; wait for a falling edge before firing again
 
         self._last_fired[rid] = time.time()
-        log.info("Automation '%s' triggered (payload=%r).", rid, payload[:80])
+        log.info("Automation '%s' triggered (topic=%s payload=%r).", rid, topic, payload[:80])
         self._run_actions(rule)
 
-    def _match(self, match: dict, payload: str) -> tuple[bool, Any]:
-        mtype = match.get("type", "equals")
+    def _match(self, cond: dict, payload: str) -> tuple[bool, Any]:
+        mtype = cond.get("type", "equals")
         raw = payload.strip()
         subject: Any = raw
 
-        field = match.get("field")
+        field = cond.get("field")
         if field:
             try:
                 obj = json.loads(raw)
@@ -268,10 +354,21 @@ class AutomationEngine:
         if mtype == "any":
             return (True, subject)
 
-        target = match.get("value")
-        if mtype in ("gt", "lt"):
+        target = cond.get("value")
+        if mtype in ("gt", "lt", "between"):
             try:
                 s = float(subject)
+            except (TypeError, ValueError):
+                return (False, subject)
+            if mtype == "between":
+                try:
+                    lo, hi = float(cond.get("value")), float(cond.get("value2"))
+                except (TypeError, ValueError):
+                    return (False, subject)
+                if lo > hi:
+                    lo, hi = hi, lo
+                return (lo <= s <= hi, subject)
+            try:
                 t = float(target)
             except (TypeError, ValueError):
                 return (False, subject)
@@ -279,7 +376,7 @@ class AutomationEngine:
 
         s_str = str(subject)
         t_str = str(target)
-        if match.get("ignore_case", True):
+        if cond.get("ignore_case", True):
             s_cmp, t_cmp = s_str.lower(), t_str.lower()
         else:
             s_cmp, t_cmp = s_str, t_str
@@ -291,7 +388,7 @@ class AutomationEngine:
         if mtype == "contains":
             return (t_cmp in s_cmp, subject)
         if mtype == "regex":
-            flags = re.IGNORECASE if match.get("ignore_case", True) else 0
+            flags = re.IGNORECASE if cond.get("ignore_case", True) else 0
             return (re.search(t_str, s_str, flags) is not None, subject)
         return (False, subject)
 
@@ -481,6 +578,7 @@ class AutomationEngine:
         if self.rules_path.exists():
             try:
                 for r in json.loads(self.rules_path.read_text()):
+                    r = _normalize_rule(r)
                     self._rules[r["id"]] = r
                 log.info("Loaded %d automation(s).", len(self._rules))
             except (OSError, ValueError, KeyError) as exc:
@@ -493,10 +591,14 @@ class AutomationEngine:
         if self.trigger_state_path.exists():
             try:
                 raw = json.loads(self.trigger_state_path.read_text())
-                # A retained "on" message replayed after a restart then reads as
+                # A retained message replayed after a restart then reads as
                 # "already seen", so an on_change rule won't spuriously re-fire.
-                self._last_match = {k: (v[0], v[1]) for k, v in raw.items()}
-            except (OSError, ValueError, IndexError) as exc:
+                for rid, st in raw.items():
+                    if isinstance(st, dict) and "conds" in st:
+                        self._cond_state[rid] = [tuple(c) if c is not None else None
+                                                 for c in st.get("conds", [])]
+                        self._last_overall[rid] = bool(st.get("overall", False))
+            except (OSError, ValueError, TypeError, IndexError) as exc:
                 log.warning("Could not load trigger state: %s", exc)
         if self.rotations_path.exists():
             try:
@@ -511,7 +613,10 @@ class AutomationEngine:
 
     def _save_trigger_state(self) -> None:
         try:
-            data = {k: [m, v] for k, (m, v) in self._last_match.items()}
+            with self._lock:
+                data = {rid: {"conds": [list(c) if c is not None else None for c in state],
+                              "overall": self._last_overall.get(rid, False)}
+                        for rid, state in self._cond_state.items()}
             self.trigger_state_path.write_text(json.dumps(data, default=str))
         except OSError as exc:  # pragma: no cover
             log.error("Could not save trigger state: %s", exc)
