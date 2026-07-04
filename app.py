@@ -19,7 +19,6 @@ a "Connect account" button that kicks off the OAuth flow.
 
 from __future__ import annotations
 
-import copy
 import json
 import logging
 import secrets
@@ -106,23 +105,6 @@ def _save_onboard_backup(data: dict) -> None:
         ONBOARD_BACKUP.write_text(json.dumps(data, indent=2))
     except OSError as exc:
         log.error("Could not save onboard schedule backup: %s", exc)
-
-
-def _cancel_all_periods(schedule: Any) -> Optional[dict]:
-    """Deep-copy a schedule with every timed period cancelled. Returns None if the
-    schedule doesn't have the expected timed-schedule shape (e.g. round devices)."""
-    if not isinstance(schedule, dict):
-        return None
-    s = copy.deepcopy(schedule)
-    days = (s.get("timedSchedule") or {}).get("days")
-    if not isinstance(days, list) or not days:
-        return None
-    n = 0
-    for day in days:
-        for period in (day.get("periods") or []):
-            period["isCancelled"] = True
-            n += 1
-    return s if n else None
 
 
 # ------------------------------------------------------------ command plumbing
@@ -441,31 +423,32 @@ def api_device_raw(device_id: str):
 
 @app.post("/api/devices/{device_id}/onboard_schedule/disable")
 def api_disable_onboard(device_id: str):
-    """Disable a thermostat's onboard schedule (cancel all periods) so this app's
-    holds are the only thing driving it. Backs up the original first."""
+    """Turn off a thermostat's onboard schedule by setting its schedule type to
+    'None'. The previous type is recorded so 'restore' can switch it back.
+
+    (Resideo doesn't expose the stored day/time periods to read, so we change the
+    schedule *type* rather than cancel individual periods.)"""
     if not client.is_authorized:
         raise HTTPException(401, "Account not authorized. Connect it first.")
     loc = store.location_of(device_id)
     if loc is None:
         raise HTTPException(404, f"Unknown device {device_id} (has it been polled yet?)")
-    cached = store.get(device_id)
-    stype = cached.get("scheduleType") if cached else None
-    try:
-        schedule = client.get_schedule(device_id, loc, schedule_type=stype)
-    except HoneywellError as exc:
-        raise HTTPException(502, f"Couldn't read the onboard schedule (this device may not "
-                                 f"support one): {exc}")
-    cancelled = _cancel_all_periods(schedule)
-    if cancelled is None:
-        raise HTTPException(400, "This device doesn't expose a timed onboard schedule to disable.")
+    cached = store.get(device_id) or {}
+    short = cached.get("scheduleTypeShort")
+    if not short or short.lower() == "none":
+        raise HTTPException(400, "This device has no active onboard schedule to disable.")
+    sub = cached.get("scheduleSubType") or "NA"
     backup = _load_onboard_backup()
-    if device_id not in backup:          # keep the FIRST backup — the true original
-        backup[device_id] = schedule
+    if device_id not in backup:          # remember the original type to restore
+        backup[device_id] = {"scheduleType": short,
+                             "scheduleTypeApi": cached.get("scheduleType"),
+                             "scheduleSubType": sub}
         _save_onboard_backup(backup)
+    body = {"deviceID": device_id, "scheduleType": "None", "scheduleSubType": sub}
     try:
-        client.set_schedule(device_id, loc, cancelled, schedule_type=stype)
+        client.set_schedule(device_id, loc, body, schedule_type="None")
     except HoneywellError as exc:
-        raise HTTPException(502, f"Couldn't write the onboard schedule: {exc}")
+        raise HTTPException(502, f"Couldn't disable the onboard schedule: {exc}")
     notify("info", "onboard_schedule", f"Onboard schedule disabled for {device_id} "
                                        f"(app is now the sole source of truth).")
     return {"ok": True, "taken_over": True}
@@ -473,7 +456,9 @@ def api_disable_onboard(device_id: str):
 
 @app.post("/api/devices/{device_id}/onboard_schedule/restore")
 def api_restore_onboard(device_id: str):
-    """Restore a thermostat's original onboard schedule from the backup."""
+    """Switch a thermostat's schedule type back to what it was before takeover.
+    Resideo doesn't expose the saved periods, so custom day/time entries may need
+    to be re-created in the Resideo app."""
     if not client.is_authorized:
         raise HTTPException(401, "Account not authorized. Connect it first.")
     loc = store.location_of(device_id)
@@ -481,18 +466,19 @@ def api_restore_onboard(device_id: str):
         raise HTTPException(404, f"Unknown device {device_id}")
     backup = _load_onboard_backup()
     original = backup.get(device_id)
-    if original is None:
-        raise HTTPException(404, "No saved onboard schedule to restore for this device.")
-    cached = store.get(device_id)
-    stype = (cached.get("scheduleType") if cached else None) or (
-        original.get("scheduleType") if isinstance(original, dict) else None)
+    if not original:
+        raise HTTPException(404, "No saved onboard schedule type to restore for this device.")
+    short = original.get("scheduleType") or "Timed"
+    api = original.get("scheduleTypeApi") or short
+    sub = original.get("scheduleSubType") or "NA"
+    body = {"deviceID": device_id, "scheduleType": short, "scheduleSubType": sub}
     try:
-        client.set_schedule(device_id, loc, original, schedule_type=stype)
+        client.set_schedule(device_id, loc, body, schedule_type=api)
     except HoneywellError as exc:
-        raise HTTPException(502, f"Couldn't restore the onboard schedule: {exc}")
+        raise HTTPException(502, f"Couldn't restore the onboard schedule type: {exc}")
     backup.pop(device_id, None)
     _save_onboard_backup(backup)
-    notify("info", "onboard_schedule", f"Onboard schedule restored for {device_id}.")
+    notify("info", "onboard_schedule", f"Onboard schedule re-enabled for {device_id}.")
     return {"ok": True, "taken_over": False}
 
 
