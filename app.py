@@ -19,6 +19,8 @@ a "Connect account" button that kicks off the OAuth flow.
 
 from __future__ import annotations
 
+import copy
+import json
 import logging
 import secrets
 import threading
@@ -62,6 +64,7 @@ bridge = None          # set up in lifespan if MQTT enabled
 scheduler: Optional[FacilityScheduler] = None
 engine: Optional[AutomationEngine] = None
 _poller_stop = threading.Event()
+_schedules_asserted = False   # assert program setpoints once, after the first poll
 
 
 def notify(severity: str, kind: str, message: str) -> None:
@@ -81,6 +84,45 @@ def sync_automation_topics() -> None:
     """Keep the MQTT bridge subscribed to exactly the topics our rules watch."""
     if bridge and engine:
         bridge.sync_trigger_topics(engine.subscribed_topics())
+
+
+# ------------------------------------------------ onboard (device) schedule
+# To make this app the sole source of truth, we can disable a thermostat's own
+# onboard schedule by cancelling every period. The original is backed up first so
+# it can be restored. Backup keys are deviceIDs the app currently holds disabled.
+
+ONBOARD_BACKUP = Path("onboard_backup.json")
+
+
+def _load_onboard_backup() -> dict:
+    try:
+        return json.loads(ONBOARD_BACKUP.read_text()) if ONBOARD_BACKUP.exists() else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_onboard_backup(data: dict) -> None:
+    try:
+        ONBOARD_BACKUP.write_text(json.dumps(data, indent=2))
+    except OSError as exc:
+        log.error("Could not save onboard schedule backup: %s", exc)
+
+
+def _cancel_all_periods(schedule: Any) -> Optional[dict]:
+    """Deep-copy a schedule with every timed period cancelled. Returns None if the
+    schedule doesn't have the expected timed-schedule shape (e.g. round devices)."""
+    if not isinstance(schedule, dict):
+        return None
+    s = copy.deepcopy(schedule)
+    days = (s.get("timedSchedule") or {}).get("days")
+    if not isinstance(days, list) or not days:
+        return None
+    n = 0
+    for day in days:
+        for period in (day.get("periods") or []):
+            period["isCancelled"] = True
+            n += 1
+    return s if n else None
 
 
 # ------------------------------------------------------------ command plumbing
@@ -189,6 +231,7 @@ def poll_once() -> None:
 
 
 def _poller_loop() -> None:
+    global _schedules_asserted
     # Small initial delay so the server is up before the first poll.
     _poller_stop.wait(2)
     while not _poller_stop.is_set():
@@ -196,6 +239,14 @@ def _poller_loop() -> None:
             poll_once()
         except Exception as exc:  # never let the loop die
             log.exception("Unexpected poller error: %s", exc)
+        # Once devices are known, assert each program's active setpoints so the
+        # app owns them immediately after a (re)start, not only at the next period.
+        if not _schedules_asserted and scheduler and store.all_device_ids():
+            _schedules_asserted = True
+            try:
+                scheduler.apply_all_active_now()
+            except Exception as exc:
+                log.exception("Startup schedule assertion failed: %s", exc)
         _poller_stop.wait(Config.POLL_INTERVAL_SECONDS)
 
 
@@ -351,6 +402,67 @@ def api_refresh():
     return {"ok": True, "message": "Refresh started"}
 
 
+# ------------------------------------------------ onboard schedule endpoints
+
+@app.get("/api/onboard_schedule")
+def api_onboard_status():
+    """Which devices the app is currently holding with their onboard schedule
+    disabled. Reads the local backup only - no Resideo calls, so it's cheap."""
+    return {"taken_over": list(_load_onboard_backup().keys())}
+
+
+@app.post("/api/devices/{device_id}/onboard_schedule/disable")
+def api_disable_onboard(device_id: str):
+    """Disable a thermostat's onboard schedule (cancel all periods) so this app's
+    holds are the only thing driving it. Backs up the original first."""
+    if not client.is_authorized:
+        raise HTTPException(401, "Account not authorized. Connect it first.")
+    loc = store.location_of(device_id)
+    if loc is None:
+        raise HTTPException(404, f"Unknown device {device_id} (has it been polled yet?)")
+    try:
+        schedule = client.get_schedule(device_id, loc)
+    except HoneywellError as exc:
+        raise HTTPException(502, f"Couldn't read the onboard schedule (this device may not "
+                                 f"support one): {exc}")
+    cancelled = _cancel_all_periods(schedule)
+    if cancelled is None:
+        raise HTTPException(400, "This device doesn't expose a timed onboard schedule to disable.")
+    backup = _load_onboard_backup()
+    if device_id not in backup:          # keep the FIRST backup — the true original
+        backup[device_id] = schedule
+        _save_onboard_backup(backup)
+    try:
+        client.set_schedule(device_id, loc, cancelled)
+    except HoneywellError as exc:
+        raise HTTPException(502, f"Couldn't write the onboard schedule: {exc}")
+    notify("info", "onboard_schedule", f"Onboard schedule disabled for {device_id} "
+                                       f"(app is now the sole source of truth).")
+    return {"ok": True, "taken_over": True}
+
+
+@app.post("/api/devices/{device_id}/onboard_schedule/restore")
+def api_restore_onboard(device_id: str):
+    """Restore a thermostat's original onboard schedule from the backup."""
+    if not client.is_authorized:
+        raise HTTPException(401, "Account not authorized. Connect it first.")
+    loc = store.location_of(device_id)
+    if loc is None:
+        raise HTTPException(404, f"Unknown device {device_id}")
+    backup = _load_onboard_backup()
+    original = backup.get(device_id)
+    if original is None:
+        raise HTTPException(404, "No saved onboard schedule to restore for this device.")
+    try:
+        client.set_schedule(device_id, loc, original)
+    except HoneywellError as exc:
+        raise HTTPException(502, f"Couldn't restore the onboard schedule: {exc}")
+    backup.pop(device_id, None)
+    _save_onboard_backup(backup)
+    notify("info", "onboard_schedule", f"Onboard schedule restored for {device_id}.")
+    return {"ok": True, "taken_over": False}
+
+
 @app.get("/api/alerts")
 def api_alerts(limit: int = Query(50, ge=1, le=200)):
     return {"alerts": store.alerts(limit=limit)}
@@ -369,6 +481,11 @@ def api_add_schedule(rule: dict = Body(...)):
         created = scheduler.add_rule(rule)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    # Take control immediately: apply the program's currently-active period now,
+    # rather than waiting for the next period boundary.
+    if created.get("enabled", True):
+        threading.Thread(target=scheduler.apply_active_now,
+                         args=(created["id"],), daemon=True).start()
     return {"ok": True, "rule": created}
 
 
@@ -382,6 +499,9 @@ def api_update_schedule(rule_id: str, rule: dict = Body(...)):
         raise HTTPException(400, str(exc))
     if updated is None:
         raise HTTPException(404, "No such rule")
+    if updated.get("enabled", True):
+        threading.Thread(target=scheduler.apply_active_now,
+                         args=(rule_id,), daemon=True).start()
     return {"ok": True, "rule": updated}
 
 

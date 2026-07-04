@@ -38,6 +38,7 @@ one-period program automatically on load and on create.
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import uuid
@@ -212,6 +213,66 @@ class FacilityScheduler:
             self.apply_fn(rule.get("targets", "all"), period["action"])
         except Exception as exc:
             log.error("Schedule '%s' period %s failed: %s", rule_id, idx, exc)
+
+    # ---------------------------------------------- enforce (source of truth)
+
+    def _now(self) -> datetime.datetime:
+        tz = getattr(self._sched, "timezone", None)
+        try:
+            return datetime.datetime.now(tz) if tz else datetime.datetime.now()
+        except Exception:
+            return datetime.datetime.now()
+
+    def _active_period(self, rule: dict, now: datetime.datetime) -> dict | None:
+        """The period whose setpoints a program says should be in effect *now* —
+        the most recent period boundary that has already passed on an active day,
+        looking back up to a week. Returns None if the program has no periods."""
+        periods = rule.get("periods") or []
+        if not periods:
+            return None
+        days = [str(d).lower() for d in (rule.get("days") or [])]
+        dow = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+        def pmin(p):
+            h, m = _valid_hhmm(p.get("time"))
+            return h * 60 + m
+        ordered = sorted(periods, key=pmin)
+        now_min = now.hour * 60 + now.minute
+        for back in range(0, 8):
+            day_idx = (now.weekday() - back) % 7
+            if days and dow[day_idx] not in days:
+                continue
+            if back == 0:
+                passed = [p for p in ordered if pmin(p) <= now_min]
+                if passed:
+                    return passed[-1]
+                # nothing yet today; keep walking back to a prior active day
+            else:
+                return ordered[-1]
+        return None
+
+    def apply_active_now(self, rule_id: str) -> bool:
+        """Apply the program's currently-active period right now, so it takes
+        control immediately on create/edit (not only at the next boundary)."""
+        rule = self._rules.get(rule_id)
+        if not rule or not rule.get("enabled", True):
+            return False
+        period = self._active_period(rule, self._now())
+        if not period:
+            return False
+        log.info("Asserting program '%s' active period (%s).", rule_id, period.get("time"))
+        try:
+            self.apply_fn(rule.get("targets", "all"), period["action"])
+            return True
+        except Exception as exc:
+            log.error("Asserting program '%s' failed: %s", rule_id, exc)
+            return False
+
+    def apply_all_active_now(self) -> None:
+        """Re-assert every enabled program's active period (used once at startup
+        so the app owns the setpoints as soon as devices are known)."""
+        for rid in list(self._rules):
+            self.apply_active_now(rid)
 
     # ------------------------------------------------------------ persistence
 

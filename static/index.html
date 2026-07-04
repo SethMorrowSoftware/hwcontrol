@@ -565,6 +565,15 @@
         <button class="btn ghost" id="p-cancel" hidden>Cancel edit</button>
       </div>
     </div>
+
+    <div class="sectitle">Thermostat onboard schedules</div>
+    <div class="card-lg">
+      <div class="desc">Make this app the single source of truth: disable a thermostat's
+        <em>own</em> onboard schedule so nothing but this app's programs and holds drive it.
+        The original is backed up first and can be restored anytime. This writes to the
+        physical thermostat, so it's done per device (T-series/LCC units).</div>
+      <div id="onboardList"></div>
+    </div>
   </section>
 
   <section class="view" id="view-alerts" role="tabpanel" aria-labelledby="tab-alerts" tabindex="0" hidden>
@@ -793,7 +802,7 @@ async function loadDevices(){
     const r=await api("/api/devices"); state.devices=r.devices||[]; state.loaded=true;
     renderZones(); populateTargets();
     const sig=state.devices.map(d=>d.deviceID).sort().join("|");
-    if(sig!==state.pickerSig){ state.pickerSig=sig; populatePickers(); }
+    if(sig!==state.pickerSig){ state.pickerSig=sig; populatePickers(); loadOnboard(); }
   }catch(e){ if(!state.loaded){ state.loaded=true; renderZones(); } }
 }
 
@@ -880,6 +889,7 @@ async function loadSchedules(){
         <div class="auto-trigger">${f.days} · ${f.tgt}</div>
         <div class="prog-periods">${f.pers}</div>`;
       list.appendChild(div); }
+    loadOnboard();
   }catch(e){}
 }
 function resetProgramForm(){
@@ -937,6 +947,34 @@ async function delRule(id,btn){
 async function toggleRule(id,en){ try{
     await api("/api/schedules/"+id+"/enabled",{method:"POST",body:JSON.stringify({enabled:en})});
     loadSchedules(); }catch(e){ toast(e.message,true); } }
+
+/* onboard (device) schedule takeover */
+async function loadOnboard(){
+  const c=document.getElementById("onboardList"); if(!c) return;
+  try{
+    const r=await api("/api/onboard_schedule"); const taken=new Set(r.taken_over||[]);
+    if(!state.devices.length){ c.innerHTML=`<div class="conds-empty">No zones yet — connect the account and wait for the first poll.</div>`; return; }
+    c.innerHTML=state.devices.map(d=>{ const on=taken.has(d.deviceID);
+      return `<div class="brow" style="align-items:center">
+        <span class="badge ${on?'':'off'}" style="${on?'':'background:var(--surface-2);color:var(--muted)'}">${on?'APP IN CONTROL':'ONBOARD ACTIVE'}</span>
+        <div class="f grow" style="flex:3 1 200px"><span class="rname" style="font-weight:650">${esc(d.name)}</span> <span style="color:var(--faint);font-family:var(--mono);font-size:11px">${esc(d.deviceID)}</span></div>
+        ${on?`<button class="btn sm" onclick="restoreOnboard('${d.deviceID}',this)">Restore onboard</button>`
+             :`<button class="btn sm warm" onclick="disableOnboard('${d.deviceID}',this)">Take over</button>`}
+      </div>`; }).join("");
+  }catch(e){}
+}
+async function disableOnboard(id,btn){
+  if(!await confirmDialog("Disable this thermostat's onboard schedule? This app will drive it from now on. The original schedule is backed up so you can restore it anytime.","Take over")) return;
+  try{ await withBusy(btn,()=>api("/api/devices/"+id+"/onboard_schedule/disable",{method:"POST"}));
+    toast("Onboard schedule disabled — app in control"); loadOnboard();
+  }catch(e){ toast("Couldn't take over: "+e.message,true); }
+}
+async function restoreOnboard(id,btn){
+  if(!await confirmDialog("Restore this thermostat's original onboard schedule?","Restore")) return;
+  try{ await withBusy(btn,()=>api("/api/devices/"+id+"/onboard_schedule/restore",{method:"POST"}));
+    toast("Onboard schedule restored"); loadOnboard();
+  }catch(e){ toast("Couldn't restore: "+e.message,true); }
+}
 
 /* ---------- alerts ---------- */
 async function loadAlerts(){

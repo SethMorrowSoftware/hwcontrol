@@ -311,3 +311,19 @@ class HoneywellClient:
             params={"locationId": location_id},
             json_body={"mode": mode},
         )
+
+    # ------------------------------------------------- onboard (device) schedule
+
+    def get_schedule(self, device_id: str, location_id: int | str) -> Any:
+        """Read a device's onboard 7-day schedule. Present on T-series/LCC units;
+        round (TCC-) devices generally return an error (no /schedule resource)."""
+        return self._request(
+            "GET", f"devices/schedule/{device_id}", params={"locationId": location_id}
+        )
+
+    def set_schedule(self, device_id: str, location_id: int | str, schedule: dict) -> None:
+        """Write a device's onboard schedule back (used to disable/restore it)."""
+        self._request(
+            "POST", f"devices/schedule/{device_id}",
+            params={"locationId": location_id}, json_body=schedule,
+        )

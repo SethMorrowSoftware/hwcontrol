@@ -204,6 +204,41 @@ genuine transition to "off" still stops the rotation and triggers the restore.
 
 ---
 
+## Schedules & source of truth
+
+**Schedules are daily programs.** A program targets one zone (or all) on selected
+days and runs any number of timed **periods** — each period sets a mode and/or
+setpoints with a hold. Build them under **Schedules**, using one-tap **Turn ON**,
+**Set temperature**, and **Turn OFF** presets, and edit them in place.
+
+**How a program overrides the thermostat's own schedule.** Each period writes a
+setpoint with a *hold*:
+
+- **Permanent hold** (the preset default) suspends the thermostat's onboard
+  schedule indefinitely — the value stays until the next period replaces it, so
+  between periods the onboard schedule never acts. This app wins.
+- **Until next period** / **Resume schedule** hand control back to the onboard
+  schedule; use those only if you *want* the device's own schedule to take over.
+
+**The app asserts control immediately.** When you create or edit a program — and
+once at startup, after the first poll — the app applies the program's
+currently-active period right away, so it owns the setpoints from that moment, not
+only at the next period boundary.
+
+**Disable the onboard schedule entirely (optional, for sole control).** Under
+**Schedules → Thermostat onboard schedules**, **Take over** a thermostat to cancel
+every period of its onboard schedule so nothing but this app drives it. The
+original is backed up first (`onboard_backup.json`) and **Restore onboard** puts it
+back. This writes to the physical thermostat and works on T-series/LCC units;
+round (TCC-) units don't expose an onboard schedule to disable.
+
+> This doesn't stop someone changing a thermostat directly in the Resideo app or at
+> the wall *between* periods — the app re-asserts on the next period, the next
+> program save, and at startup. Disabling the onboard schedule removes the device's
+> *automatic* competing changes.
+
+---
+
 ## Automations — the rule model
 
 An automation is: **a trigger** (one or more conditions combined with AND/OR) and
