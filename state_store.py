@@ -40,8 +40,21 @@ def _normalize(raw: dict) -> dict:
         "minCoolSetpoint": raw.get("minCoolSetpoint"),
         "maxCoolSetpoint": raw.get("maxCoolSetpoint"),
         "scheduleStatus": raw.get("scheduleStatus"),
+        # Onboard-schedule type (e.g. "TimedNorthAmerica"); the /devices/schedule
+        # endpoint requires it as the `type` query param. Shape varies by firmware,
+        # so read it defensively.
+        "scheduleType": _schedule_type(raw),
         "changeableValues": cv,  # kept so control calls can merge cleanly
     }
+
+
+def _schedule_type(raw: dict) -> Optional[str]:
+    st = raw.get("scheduleType")
+    if isinstance(st, dict):
+        st = st.get("scheduleType") or st.get("value")
+    if not st:
+        st = (raw.get("schedule") or {}).get("scheduleType") if isinstance(raw.get("schedule"), dict) else None
+    return st if isinstance(st, str) else None
 
 
 # Fields whose changes are worth announcing as events.

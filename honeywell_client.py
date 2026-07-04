@@ -314,16 +314,27 @@ class HoneywellClient:
 
     # ------------------------------------------------- onboard (device) schedule
 
-    def get_schedule(self, device_id: str, location_id: int | str) -> Any:
+    def get_schedule(self, device_id: str, location_id: int | str,
+                     schedule_type: Optional[str] = None) -> Any:
         """Read a device's onboard 7-day schedule. Present on T-series/LCC units;
-        round (TCC-) devices generally return an error (no /schedule resource)."""
-        return self._request(
-            "GET", f"devices/schedule/{device_id}", params={"locationId": location_id}
-        )
+        round (TCC-) devices generally return an error (no /schedule resource).
 
-    def set_schedule(self, device_id: str, location_id: int | str, schedule: dict) -> None:
+        The endpoint requires the device's schedule type as a query param (e.g.
+        "TimedNorthAmerica"); without it Resideo returns 400. The exact param name
+        isn't in the public docs, so we send both `type` and `scheduleType` — the
+        gateway ignores the unrecognized one."""
+        params: dict[str, Any] = {"locationId": location_id}
+        if schedule_type:
+            params["type"] = schedule_type
+            params["scheduleType"] = schedule_type
+        return self._request("GET", f"devices/schedule/{device_id}", params=params)
+
+    def set_schedule(self, device_id: str, location_id: int | str, schedule: dict,
+                     schedule_type: Optional[str] = None) -> None:
         """Write a device's onboard schedule back (used to disable/restore it)."""
-        self._request(
-            "POST", f"devices/schedule/{device_id}",
-            params={"locationId": location_id}, json_body=schedule,
-        )
+        params: dict[str, Any] = {"locationId": location_id}
+        if schedule_type:
+            params["type"] = schedule_type
+            params["scheduleType"] = schedule_type
+        self._request("POST", f"devices/schedule/{device_id}",
+                      params=params, json_body=schedule)
