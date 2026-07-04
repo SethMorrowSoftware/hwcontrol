@@ -10,10 +10,13 @@ about and easy to test.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections import deque
 from typing import Any, Iterable, Optional
+
+log = logging.getLogger("honeywell.store")
 
 
 def _normalize(raw: dict) -> dict:
@@ -58,21 +61,26 @@ def _schedule_type_info(raw: dict):
     Devices report scheduleType.scheduleType as a short name ("Timed"), but the
     /devices/schedule endpoint's `type` query param wants the matching entry from
     availableScheduleTypes ("TimedNorthAmerica"). Returns (None, None, None) when
-    the device doesn't report a schedule type."""
-    st = raw.get("scheduleType")
-    if isinstance(st, dict):
-        short, sub = st.get("scheduleType"), st.get("scheduleSubType")
-    else:
-        short, sub = st, None
-    if not isinstance(short, str) or not short:
+    the device doesn't report a usable schedule type. Never raises - schedule
+    metadata is optional and must not break device ingestion."""
+    try:
+        st = raw.get("scheduleType")
+        if isinstance(st, dict):
+            short, sub = st.get("scheduleType"), st.get("scheduleSubType")
+        else:
+            short, sub = st, None
+        if not isinstance(short, str) or not short:
+            return (None, None, None)
+        caps_obj = raw.get("scheduleCapabilities")
+        avail = caps_obj.get("availableScheduleTypes") if isinstance(caps_obj, dict) else None
+        caps = [c for c in avail if isinstance(c, str)] if isinstance(avail, list) else []
+        low = short.lower()
+        api = next((c for c in caps if c.lower() == low), None)
+        if api is None:
+            api = next((c for c in caps if c.lower().startswith(low) or low in c.lower()), None)
+        return (api or short, short, sub if isinstance(sub, str) else None)
+    except Exception:  # optional metadata; never let it break ingestion
         return (None, None, None)
-    caps = [c for c in ((raw.get("scheduleCapabilities") or {}).get("availableScheduleTypes") or [])
-            if isinstance(c, str)]
-    low = short.lower()
-    api = next((c for c in caps if c.lower() == low), None)
-    if api is None:
-        api = next((c for c in caps if c.lower().startswith(low) or low in c.lower()), None)
-    return (api or short, short, sub)
 
 
 # Fields whose changes are worth announcing as events.
@@ -100,7 +108,12 @@ class StateStore:
         events: list[dict] = []
         with self._lock:
             for raw in raw_devices:
-                new = _normalize(raw)
+                try:
+                    new = _normalize(raw)
+                except Exception as exc:
+                    # A single malformed device must never blank the whole poll.
+                    log.warning("Skipping a device that failed to normalize: %s", exc)
+                    continue
                 did = new["deviceID"]
                 if not did:
                     continue
