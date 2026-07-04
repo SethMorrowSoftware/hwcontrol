@@ -6,6 +6,7 @@ automations.json
 snapshots.json
 rotations.json
 trigger_state.json
+onboard_backup.json
 
 # --- Python ---
 __pycache__/
