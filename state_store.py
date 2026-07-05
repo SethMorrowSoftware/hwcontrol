@@ -46,6 +46,11 @@ def _normalize(raw: dict) -> dict:
     # hides its fan control.
     fan = (raw.get("settings") or {}).get("fan") or {}
     fan_cv = fan.get("changeableValues") or {}
+    # operationStatus is the LIVE equipment state (what the relays are doing right
+    # now: "EquipmentOff" / "Heat" / "Cool"), as opposed to mode/setpoints which
+    # are what the zone is COMMANDED to do. Guarded: devices that don't report it
+    # just carry None and the dashboard falls back to command-based display.
+    op = raw.get("operationStatus") or {}
     return {
         "deviceID": raw.get("deviceID"),
         "name": raw.get("userDefinedDeviceName") or raw.get("name") or raw.get("deviceID"),
@@ -65,6 +70,9 @@ def _normalize(raw: dict) -> dict:
         "fanMode": fan_cv.get("mode"),
         "fanRunning": fan.get("fanRunning"),
         "allowedFanModes": fan.get("allowedModes", []),
+        "equipmentStatus": op.get("mode"),
+        "fanRequest": op.get("fanRequest"),
+        "circulationFanRequest": op.get("circulationFanRequest"),
         "allowedModes": raw.get("allowedModes", []),
         "minHeatSetpoint": raw.get("minHeatSetpoint"),
         "maxHeatSetpoint": raw.get("maxHeatSetpoint"),
@@ -117,7 +125,9 @@ def _schedule_type_info(raw: dict):
 # Fields whose changes are worth announcing as events. indoorTemperature is
 # deliberately excluded: it drifts every poll and would flood the event stream
 # (the temperature *band* is covered separately by _check_temp_alert).
-_WATCHED = ("online", "mode", "heatSetpoint", "coolSetpoint", "setpointStatus")
+# equipmentStatus is included so MQTT consumers see live heat/cool cycling.
+_WATCHED = ("online", "mode", "heatSetpoint", "coolSetpoint", "setpointStatus",
+            "equipmentStatus")
 
 
 class StateStore:
@@ -127,6 +137,7 @@ class StateStore:
         self._location_of: dict[str, Any] = {}       # deviceID -> locationId
         self._alerts: deque[dict] = deque(maxlen=maxlen_alerts)
         self._temp_zone: dict[str, str] = {}         # deviceID -> "ok" | "high" | "low"
+        self._equip_mismatch: dict[str, int] = {}    # deviceID -> consecutive mismatch polls
         self._last_poll_ts: Optional[float] = None
         self._last_poll_error: Optional[str] = None
         # Alert thresholds (edit or drive from config). None disables that check.
@@ -161,6 +172,7 @@ class StateStore:
                     events.extend(device_events)
                     pending_alerts.extend(self._alerts_for(old, new, device_events))
                     self._check_temp_alert(did, new, pending_alerts)
+                    self._check_equipment_alert(did, new, pending_alerts)
                 except Exception as exc:
                     # A single malformed device must never blank the whole poll.
                     log.warning("Skipping a device that failed to ingest: %s", exc)
@@ -184,6 +196,7 @@ class StateStore:
                 dev = self._devices.pop(did, None)
                 self._location_of.pop(did, None)
                 self._temp_zone.pop(did, None)
+                self._equip_mismatch.pop(did, None)
                 name = (dev or {}).get("name") or did
                 events.append({"type": "removed", "deviceID": did, "name": name, "ts": time.time()})
                 self._alerts.appendleft({
@@ -264,6 +277,41 @@ class StateStore:
             msg = f"{name} is {t}° (below {self.temp_low_alert}°)"
         out.append({"severity": "warning", "kind": "temp_" + zone,
                     "message": msg, "deviceID": device_id, "ts": time.time()})
+
+    def _check_equipment_alert(self, device_id: str, new: dict, out: list[dict]) -> None:
+        """Alert when the LIVE equipment state contradicts the commanded mode —
+        e.g. a zone set to Off whose equipment is actively heating (stuck relay,
+        wiring fault, or a write that never took). Called while holding self._lock.
+
+        Debounced to the SECOND consecutive mismatching poll: equipment can
+        legitimately run for a short while right after a mode change (compressor
+        minimum-run timers), and one poll cycle absorbs that. Edge-triggered:
+        alerts once per episode and re-arms when the mismatch clears."""
+        mode = (new.get("mode") or "").lower()
+        equip = (new.get("equipmentStatus") or "").lower()
+        if not equip or not mode:
+            self._equip_mismatch.pop(device_id, None)
+            return
+        running_heat = "heat" in equip
+        running_cool = "cool" in equip
+        # Auto may legitimately run either way; fan-only running in Off reports
+        # EquipmentOff + fanRequest, so it never trips this.
+        mismatch = ((mode == "off" and (running_heat or running_cool))
+                    or (mode == "heat" and running_cool)
+                    or (mode == "cool" and running_heat))
+        if not mismatch:
+            self._equip_mismatch.pop(device_id, None)
+            return
+        n = self._equip_mismatch.get(device_id, 0) + 1
+        self._equip_mismatch[device_id] = n
+        if n != 2:      # 1st poll = grace period; >2 = already alerted this episode
+            return
+        name = new.get("name") or device_id
+        verb = "heating" if running_heat else "cooling"
+        out.append({"severity": "warning", "kind": "equipment_mismatch",
+                    "message": f"{name} equipment is actively {verb} but the zone is set "
+                               f"to {new.get('mode')} — check the unit",
+                    "deviceID": device_id, "ts": time.time()})
 
     def add_alert(self, severity: str, kind: str, message: str, device_id: str = "") -> dict:
         alert = {"severity": severity, "kind": kind, "message": message,

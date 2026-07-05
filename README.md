@@ -144,19 +144,24 @@ If you change one, change the other to match.
 Served at `/`. It's a single self-contained page (no external fonts or CDNs, works
 on an air-gapped LAN) that polls the local API every ~10s. Four tabs:
 
-- **Zones** — a search filter and live fleet summary (online/offline and mode
-  counts) above a card per thermostat: current temp/humidity, online dot, what the
-  zone is set to do right now, mode chips, heat/cool steppers (press-and-hold to
-  repeat), fan mode (when the device reports fan capability), hold selector, and
-  Apply. Changes you're typing are preserved across background refreshes until you
-  Apply or discard.
+- **Zones** — a search filter and live fleet summary (online/offline, how many
+  zones are **actively heating / cooling right now**, and mode counts) above a
+  card per thermostat: current temp/humidity, online dot, a live activity chip
+  ("Heating to 66°" with a pulse while equipment runs, "Idle · Heat 66°" while it
+  holds — straight from the thermostat's reported equipment state, with a
+  commanded-target fallback on models that don't report it), mode chips,
+  heat/cool steppers (press-and-hold to repeat), fan mode (when the device
+  reports fan capability), hold selector, and Apply. Changes you're typing are
+  preserved across background refreshes until you Apply or discard.
 - **Automations** — the generator load-shed setup, a live status strip (active
   rotations, saved snapshots, MQTT connection), the list of rules (editable), and a
   custom multi-condition (AND/OR) rule builder. Details below.
 - **Schedules** — daily programs: pick a target and days, then add timed periods
   (ON / OFF / temperature changes) with one-tap presets. Programs are editable.
-- **Alerts** — a feed of offline/again events, out-of-range temperatures, and a log
-  of every automation action taken, filterable by severity; the tab badge turns
+- **Alerts** — a feed of offline/again events, out-of-range temperatures,
+  equipment faults (a zone actively heating/cooling while set to Off — checked
+  against the live equipment state, debounced across two polls), and a log of
+  every automation action taken, filterable by severity; the tab badge turns
   red/amber while critical/warning alerts are live.
 
 ### Optional access gate
