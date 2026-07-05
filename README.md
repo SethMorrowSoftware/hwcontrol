@@ -164,25 +164,28 @@ handles auth/TLS.
 
 ---
 
-## Generator load-shed — walkthrough
+## Power-outage plan (generator) — walkthrough
 
-This is the turnkey path for the main use case. Open **Automations → Generator
-load-shed** and fill in:
+This is the turnkey path for the main use case, designed so anyone can set it up
+without help. Open **Automations → Power-outage plan (generator)** and work through
+three plain-language steps:
 
-- **Generator status topic** — the MQTT topic your transfer switch / power monitor
-  publishes to, e.g. `facility/generator/status`.
-- **JSON field** (optional) — if the payload is JSON like `{"power":{"source":"generator"}}`,
-  put the dot-path `power.source` here. Leave blank if the payload is a plain string
-  like `on` / `off`.
-- **Payload when ON generator** / **when back on utility** — the values to match,
-  e.g. `on` and `off`, or `generator` and `mains`.
-- **Turn these zones OFF** — non-critical zones that should simply shut off on
-  generator power.
-- **Rotate these zones** — critical zones that should keep *some* conditioning.
-  Choose **how many run at once**, the **interval** (≥5 min), and the **setpoints**
-  to hold while a zone is in its "on" slice.
+- **Step 1 — Which zones matter most?** Pick the critical zones to **keep running
+  (they take turns)** and the non-critical zones that **can switch off** during the
+  outage. (The form won't let you put the same zone in both.)
+- **Step 2 — How should they share the generator?** Leave it on **Half on / half
+  off** (the safe default) or choose a set number, set the **swap interval** (≥5 min),
+  and the **hold temperatures** while a zone is running.
+- **Step 3 — How does the app know the generator is on?** It's preset to listen for
+  `on` / `off` on `facility/generator/status`. The MQTT topic/payload details live
+  under **"Change the message details (advanced)"** if your equipment differs.
 
-Click **Create generator rules**. This creates two paired automations:
+As you fill it in, a **live preview** spells out exactly what will happen in plain
+English ("When the generator turns ON: switch OFF …; keep … running half-on/half-off,
+swapping every 15 min … When utility power returns: put every zone back exactly how
+it was."), so there are no surprises before you click **Create outage plan**.
+
+This creates two paired automations:
 
 1. **On generator** (`facility/generator/status` = `on`):
    - **snapshots** the current settings of all involved zones as `pre_generator`,
