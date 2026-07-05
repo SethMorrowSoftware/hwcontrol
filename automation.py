@@ -60,6 +60,19 @@ list of actions:
       "on_values":  {"mode":"Heat","heatSetpoint":66,"thermostatSetpointStatus":"PermanentHold"},
       "off_values": {"mode":"Off"} }
   ]
+
+How many units run at once (keep the group under the generator's limit) can be set
+three composable ways on a `rotate` action:
+  run_count    a fixed number of units on at a time.
+  on_fraction  a fraction of the group, e.g. 0.5 = half on / half off (auto-adjusts
+               if you add/remove zones).
+  max_power    a power budget; with a per-unit `power` map (deviceID -> kW/amps/any
+               consistent unit, default 1 each) the on-set is trimmed so its total
+               draw stays under the budget. Units are added around the rotating
+               window in order until the next one wouldn't fit.
+Swaps are break-before-make (outgoing units off before incoming on) so a swap never
+transiently exceeds the cap, and incoming units start one at a time to stagger
+compressor inrush.
 }
 
 Legacy rules using a single {"topic", "match": {...}} trigger are migrated to the
@@ -305,14 +318,45 @@ class AutomationEngine:
                 targets = _dedupe(self._static_targets(a.get("targets")))
                 if not a.get("targets"):
                     raise ValueError("rotate needs targets")
-                if int(a.get("run_count", 1)) < 1:
+                # How many run at once can be given three (composable) ways:
+                #   run_count   - a fixed number of units
+                #   on_fraction - a fraction of the group (0.5 = half on/half off)
+                #   max_power   - a power budget; with per-unit `power` weights the
+                #                 on-set is trimmed so its total draw stays under it
+                # At least one must be present; max_power/on_fraction default the
+                # others sensibly. This keeps the group under the generator's limit.
+                if "run_count" in a and int(a.get("run_count", 1)) < 1:
                     raise ValueError("rotate run_count must be >= 1")
+                if "on_fraction" in a:
+                    try:
+                        f = float(a["on_fraction"])
+                    except (TypeError, ValueError):
+                        raise ValueError("rotate on_fraction must be a number in (0, 1]")
+                    if not (0 < f <= 1):
+                        raise ValueError("rotate on_fraction must be in (0, 1]")
+                if "max_power" in a:
+                    try:
+                        if float(a["max_power"]) <= 0:
+                            raise ValueError
+                    except (TypeError, ValueError):
+                        raise ValueError("rotate max_power must be a positive number")
+                power = a.get("power")
+                if power is not None:
+                    if not isinstance(power, dict):
+                        raise ValueError("rotate power must be a map of deviceID -> power")
+                    for k, v in power.items():
+                        try:
+                            if float(v) < 0:
+                                raise ValueError
+                        except (TypeError, ValueError):
+                            raise ValueError(f"rotate power[{k}] must be a non-negative number")
                 if int(a.get("interval_minutes", 0)) < MIN_ROTATION_MINUTES:
                     raise ValueError(f"rotate interval_minutes must be >= {MIN_ROTATION_MINUTES} "
                                      f"(protects compressors from short-cycling)")
-                # run_count >= number of zones means nothing is ever shed - warn so
-                # a mis-set rotation doesn't quietly run every zone on the generator.
-                if targets and int(a.get("run_count", 1)) >= len(targets):
+                # A fixed run_count >= number of zones means nothing is ever shed -
+                # warn (only meaningful for the plain count mode).
+                if targets and "run_count" in a and "max_power" not in a \
+                        and "on_fraction" not in a and int(a.get("run_count", 1)) >= len(targets):
                     log.warning("rotate '%s': run_count %s >= %d zones; no zones will be shed.",
                                 a.get("rotation_id"), a.get("run_count"), len(targets))
             if at in ("snapshot", "restore") and not a.get("name"):
@@ -608,16 +652,36 @@ class AutomationEngine:
     def _start_rotation(self, action: dict) -> str:
         rid = action.get("rotation_id") or ("rot-" + str(uuid.uuid4())[:6])
         targets = _dedupe(self._resolve(action["targets"]))
-        run_count = max(1, int(action.get("run_count", 1)))
+        n = len(targets)
         interval = max(MIN_ROTATION_MINUTES, int(action.get("interval_minutes", MIN_ROTATION_MINUTES)))
         on_values = action.get("on_values", {"mode": "Heat"})
         off_values = action.get("off_values", {"mode": "Off"})
+        on_fraction = action.get("on_fraction")
+        max_power = action.get("max_power")
+        power = action.get("power") or {}
+
+        # Resolve the count cap (how many units may run at once):
+        #   explicit run_count wins; else on_fraction of the group; else if only a
+        #   power budget is set let power be the sole limiter (cap = all units);
+        #   else the legacy default of 1.
+        if "run_count" in action and action["run_count"] is not None:
+            run_count = int(action["run_count"])
+        elif on_fraction is not None:
+            run_count = round(n * float(on_fraction))
+        elif max_power is not None:
+            run_count = n
+        else:
+            run_count = 1
+        run_count = max(1, min(run_count, n)) if n else 1
+        max_power = float(max_power) if max_power is not None else None
 
         self._cancel_rotation_job(rid)
         with self._lock:
             self._rotations[rid] = {
                 "targets": targets, "run_count": run_count, "interval": interval,
                 "on_values": on_values, "off_values": off_values,
+                "on_fraction": float(on_fraction) if on_fraction is not None else None,
+                "max_power": max_power, "power": {k: float(v) for k, v in power.items()},
                 "index": 0, "current_on": set(), "job_id": f"rotation:{rid}",
             }
         # First tick now (drives the full desired state), then every interval.
@@ -626,14 +690,39 @@ class AutomationEngine:
             self._rotation_tick, IntervalTrigger(minutes=interval),
             args=[rid], id=f"rotation:{rid}", replace_existing=True,
         )
-        return f"rotate '{rid}': {run_count}/{len(targets)} on, every {interval}m"
+        cap = f"{run_count}/{n}" + (f", <= {max_power} power" if max_power is not None else "")
+        return f"rotate '{rid}': {cap} on, every {interval}m"
 
-    def _window_at(self, targets: list, run_count: int, index: int) -> list:
+    def _window_at(self, state: dict, index: int) -> list:
+        """The set of units that should be ON starting at `index`: a contiguous
+        slice of the (rotating) target order, grown until either the count cap
+        (run_count) or the power budget (max_power, summing per-unit `power`) would
+        be exceeded. At least one unit is always included so we never run nothing.
+        With no max_power this is exactly the run_count sliding window."""
+        targets = list(state.get("targets", []))
         n = len(targets)
         if n == 0:
             return []
-        rc = min(max(1, run_count), n)
-        return [targets[(index + k) % n] for k in range(rc)]
+        cap = min(max(1, int(state.get("run_count", 1) or 1)), n)
+        max_power = state.get("max_power")
+        power = state.get("power") or {}
+        window: list = []
+        total = 0.0
+        for k in range(n):
+            if len(window) >= cap:
+                break
+            did = targets[(index + k) % n]
+            w = float(power.get(did, 1))
+            if window and max_power is not None and total + w > max_power:
+                break  # adding this unit would blow the power budget
+            window.append(did)
+            total += w
+            if max_power is not None and total >= max_power:
+                break
+        if max_power is not None and total > max_power and len(window) == 1:
+            log.warning("Rotation '%s': unit %s alone draws %s > budget %s; running it anyway.",
+                        state.get("job_id"), window[0], total, max_power)
+        return window
 
     def _rotation_tick(self, rid: str) -> None:
         """Advance the window one step and drive the full desired state."""
@@ -645,15 +734,20 @@ class AutomationEngine:
             if not targets:
                 return
             idx = state["index"]
-            window = self._window_at(targets, state["run_count"], idx)
+            window = self._window_at(state, idx)
             state["index"] = (idx + 1) % len(targets)
         self._drive_rotation(rid, window)
 
     def _drive_rotation(self, rid: str, window: list) -> None:
         """Command every rotation zone to its desired state: window -> on_values,
         all other targets -> off_values. Driving the FULL state (not just believed
-        changes) guarantees at most run_count zones are ever energized even if one
-        drifted on or an earlier write failed."""
+        changes) guarantees the group never exceeds its count/power cap even if a
+        unit drifted on or an earlier write failed.
+
+        BREAK-BEFORE-MAKE: outgoing units are turned OFF *before* incoming units are
+        turned ON, so a swap never transiently exceeds the cap (which on a maxed
+        generator could trip it). Incoming units are then started one at a time
+        (serialized by the client's rate limiter), staggering compressor inrush."""
         with self._lock:
             state = self._rotations.get(rid)
             if not state:
@@ -663,14 +757,15 @@ class AutomationEngine:
             off_values = dict(state["off_values"])
         window_set = set(window)
         off_list = [d for d in targets if d not in window_set]
-        for did in window:
+        # Off first (break), then on (make).
+        for did in off_list:
             if not self._is_rotating(rid):   # a concurrent stop_rotation won -> bail
                 return
-            self._apply(did, on_values)
-        for did in off_list:
+            self._apply(did, off_values)
+        for did in window:
             if not self._is_rotating(rid):
                 return
-            self._apply(did, off_values)
+            self._apply(did, on_values)
         with self._lock:
             state = self._rotations.get(rid)
             if state is not None:
@@ -695,8 +790,7 @@ class AutomationEngine:
                 self._rotation_tick, IntervalTrigger(minutes=interval),
                 args=[rid], id=f"rotation:{rid}", replace_existing=True,
             )
-            window = list(st.get("current_on") or self._window_at(
-                list(st.get("targets", [])), int(st.get("run_count", 1) or 1), int(st.get("index", 0) or 0)))
+            window = list(st.get("current_on") or self._window_at(st, int(st.get("index", 0) or 0)))
             log.info("Resumed rotation '%s' (every %dm, %d/%d running); reconciling.",
                      rid, interval, len(window), len(st.get("targets", [])))
             try:
@@ -723,7 +817,10 @@ class AutomationEngine:
             rotations = [
                 {"rotation_id": rid, "running": sorted(st["current_on"]),
                  "run_count": st["run_count"], "total": len(st["targets"]),
-                 "interval_minutes": st["interval"]}
+                 "interval_minutes": st["interval"],
+                 "max_power": st.get("max_power"), "on_fraction": st.get("on_fraction"),
+                 "on_power": round(sum(float((st.get("power") or {}).get(d, 1))
+                                       for d in st["current_on"]), 3) if st.get("max_power") is not None else None}
                 for rid, st in self._rotations.items()
             ]
             snapshots = {name: list(snap.keys()) for name, snap in self._snapshots.items()}
@@ -773,6 +870,9 @@ class AutomationEngine:
                 st.setdefault("interval", MIN_ROTATION_MINUTES)
                 st.setdefault("on_values", {"mode": "Heat"})
                 st.setdefault("off_values", {"mode": "Off"})
+                st.setdefault("on_fraction", None)
+                st.setdefault("max_power", None)
+                st.setdefault("power", {})
                 self._rotations[rid] = st
             if self._rotations:
                 log.info("Loaded %d active rotation(s) to resume.", len(self._rotations))

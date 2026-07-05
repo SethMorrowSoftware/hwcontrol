@@ -312,18 +312,43 @@ set, the payload is parsed as JSON and that dot-path is extracted first (e.g.
 | `set`           | Apply `values` (mode / heatSetpoint / coolSetpoint / hold / fan) to targets. |
 | `snapshot`      | Save targets' current settings under `name` for later restore. **Non-clobbering**: if a snapshot of that name already exists (an outage in progress) it's kept, so a retained "on" replayed after a restart can't overwrite the good pre-outage capture with the already-shed state. |
 | `restore`       | Restore every device saved in snapshot `name`, then clear the snapshot on full success so the next outage captures fresh. Zones that fail to restore keep the snapshot for a retry. |
-| `rotate`        | Duty-cycle a group: keep `run_count` running, slide the window every `interval_minutes`; on/off units get `on_values` / `off_values`. |
+| `rotate`        | Duty-cycle a group: keep a safe subset running, slide the window every `interval_minutes`; on/off units get `on_values` / `off_values`. |
 | `stop_rotation` | Stop the rotation with `rotation_id`.                                         |
 
 **Targets** are `"all"`, a single `"deviceID"`, or a list `["id1","id2"]`.
 
-Each rotation tick drives the **full** desired state — the current window to
-`on_values`, every other member to `off_values` — rather than only the members it
-believes changed. That's a deliberate safety choice: it guarantees no more than
-`run_count` zones are ever energized even if a zone drifted on (at the wall, via
-the Resideo app, or from an earlier failed write) or the window re-entered from a
-new outage. Keep rotation groups to the genuinely critical zones and the interval
-at/above the 5-minute minimum so the extra writes stay well within the rate limit.
+**How many run at once** — set it whichever way matches how you think about your
+limit (they compose; give at least one):
+
+| Field | Meaning |
+|-------|---------|
+| `run_count` | A fixed number of units on at a time (e.g. `2`). |
+| `on_fraction` | A fraction of the group — `0.5` = **half on / half off**. Auto-adjusts if you add or remove zones, so you never have to recompute "half". |
+| `max_power` + `power` | A power budget. `power` is a map `{ "deviceID": kW }` (any consistent unit; default `1` each). The on-set is trimmed so its total draw stays **under `max_power`** — the right tool when your units draw *different* amounts and "half the units" wouldn't guarantee "under the limit". |
+
+Each rotation tick drives the **full** desired state — the window to `on_values`,
+every other member to `off_values` — rather than only the members it believes
+changed. That's a deliberate safety choice: it guarantees the group never exceeds
+its count/power cap even if a zone drifted on (at the wall, via the Resideo app, or
+from an earlier failed write) or the window re-entered from a new outage. Swaps are
+**break-before-make** (outgoing units off *before* incoming on) so a swap never
+transiently exceeds the cap, and incoming units start one at a time to stagger
+compressor inrush. Keep the interval at/above the 5-minute minimum so the extra
+writes stay well within the rate limit.
+
+```jsonc
+// Half on / half off, break-before-make, every 15 min:
+{ "type": "rotate", "rotation_id": "critical", "targets": ["Z1","Z2","Z3","Z4"],
+  "on_fraction": 0.5, "interval_minutes": 15,
+  "on_values": {"mode":"Heat","heatSetpoint":66,"thermostatSetpointStatus":"PermanentHold"},
+  "off_values": {"mode":"Off"} }
+
+// Or cap by power when units differ (keep total under 20, whatever fits):
+{ "type": "rotate", "rotation_id": "critical", "targets": ["Z1","Z2","Z3","Z4"],
+  "max_power": 20, "power": {"Z1":5,"Z2":5,"Z3":10,"Z4":10}, "interval_minutes": 15,
+  "on_values": {"mode":"Heat","heatSetpoint":66,"thermostatSetpointStatus":"PermanentHold"},
+  "off_values": {"mode":"Off"} }
+```
 
 ### Custom rules
 
