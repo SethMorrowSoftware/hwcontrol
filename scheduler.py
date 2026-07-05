@@ -43,7 +43,7 @@ import logging
 import threading
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -92,7 +92,22 @@ class FacilityScheduler:
         self.store_path = Path(store_path)
         self._rules: dict[str, dict] = {}
         self._lock = threading.RLock()
-        self._sched = BackgroundScheduler(timezone=timezone) if timezone else BackgroundScheduler()
+        # A typo in SCHEDULE_TZ must degrade to server-local time (loudly), not
+        # crash the whole app into a systemd restart loop - one bad env var would
+        # otherwise take down all climate control, not just the schedules.
+        self.timezone_error: Optional[str] = None
+        if timezone:
+            try:
+                self._sched = BackgroundScheduler(timezone=timezone)
+            except Exception as exc:
+                log.error("Invalid SCHEDULE_TZ %r (%s); falling back to the server's "
+                          "local timezone.", timezone, exc)
+                self.timezone_error = (f"SCHEDULE_TZ {timezone!r} is invalid - schedule times "
+                                       "are running in the SERVER'S local timezone until it is "
+                                       "fixed (use an IANA name like America/New_York)")
+                self._sched = BackgroundScheduler()
+        else:
+            self._sched = BackgroundScheduler()
         self._load()
 
     def start(self) -> None:
