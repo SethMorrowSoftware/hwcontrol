@@ -599,7 +599,7 @@
       <div class="desc">During an outage your generator can't run every unit at once without overloading.
         Set this up once and the app handles it automatically: the zones you choose switch off, the
         important ones take turns so they stay conditioned, and when normal power returns every zone
-        goes back exactly as it was.</div>
+        goes back exactly as it was and your daily programs resume immediately.</div>
 
       <!-- Step 1 — pick the zones -->
       <div class="gstep"><div class="n">Step 1</div><div class="t">Which zones matter most?</div></div>
@@ -1517,7 +1517,7 @@ function updateGeneratorPreview(){
   if(hasRot) onParts.push(`keep ${zoneNames(rotate)} running <b>${share}</b>, swapping every `+
     `<b>${intv} min</b> while holding <b>Heat ${heat}°</b> / <b>Cool ${cool}°</b>`);
   const onLine=`When the generator turns ON (<code>${topic}</code> = <code>${onVal}</code>): ${onParts.join("; ")}.`;
-  const offLine=`When utility power returns (= <code>${offVal}</code>): put every zone back exactly how it was.`;
+  const offLine=`When utility power returns (= <code>${offVal}</code>): put every zone back exactly how it was, then resume your daily programs.`;
   prev.innerHTML=
     `<span class="pline"><span class="pk">▸</span>${onLine}</span>`+
     `<span class="pline"><span class="pk">▸</span>${offLine}</span>`;

@@ -17,7 +17,8 @@ import automation as automation_mod
 from automation import AutomationEngine
 
 
-def make_engine(tmpdir, apply_fn, notify_fn=None, resolve=("Z1", "Z2", "Z3", "Z4")):
+def make_engine(tmpdir, apply_fn, notify_fn=None, resolve=("Z1", "Z2", "Z3", "Z4"),
+                on_restored=None):
     return AutomationEngine(
         apply_fn=apply_fn,
         resolve_fn=lambda: list(resolve),
@@ -28,6 +29,7 @@ def make_engine(tmpdir, apply_fn, notify_fn=None, resolve=("Z1", "Z2", "Z3", "Z4
         snapshots_path=os.path.join(tmpdir, "snaps.json"),
         trigger_state_path=os.path.join(tmpdir, "trig.json"),
         rotations_path=os.path.join(tmpdir, "rots.json"),
+        on_restored=on_restored,
     )
 
 
@@ -278,6 +280,60 @@ class SnapshotRestore(unittest.TestCase):
             fail["on"] = False                       # successful restore clears it
             eng._run_action({"type": "restore", "name": "pre"})
             self.assertNotIn("pre", eng._snapshots)
+
+
+class PostRestoreScheduleResume(unittest.TestCase):
+    """A successful restore must fire on_restored so the app can immediately
+    re-assert daily programs (boundaries fired during the outage were skipped -
+    zones would otherwise sit at pre-outage setpoints until the NEXT boundary)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.restored_calls = []
+        self.fail = {"on": False}
+
+        def apply_fn(target, values):
+            return [target] if self.fail["on"] else []
+        self.eng = make_engine(self.tmp.name, apply_fn,
+                               on_restored=lambda ids: self.restored_calls.append(sorted(ids)))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_hook_fires_with_restored_ids_on_full_success(self):
+        with self.eng._action_lock:
+            self.eng._run_action({"type": "snapshot", "name": "pre", "targets": ["Z1", "Z2"]})
+            self.eng._run_action({"type": "restore", "name": "pre"})
+        self.assertEqual(self.restored_calls, [["Z1", "Z2"]])
+
+    def test_hook_skipped_when_nothing_saved(self):
+        with self.eng._action_lock:
+            self.eng._run_action({"type": "restore", "name": "never-captured"})
+        self.assertEqual(self.restored_calls, [],
+                         "a no-op restore (retained 'off' replay) must not rewrite programs")
+
+    def test_hook_skipped_on_partial_failure_then_fires_on_retry(self):
+        with self.eng._action_lock:
+            self.eng._run_action({"type": "snapshot", "name": "pre", "targets": ["Z1"]})
+            self.fail["on"] = True
+            self.eng._run_action({"type": "restore", "name": "pre"})
+            self.assertEqual(self.restored_calls, [], "failed restore must not assert programs")
+            self.fail["on"] = False
+            self.eng._run_action({"type": "restore", "name": "pre"})   # the retry
+        self.assertEqual(self.restored_calls, [["Z1"]])
+
+    def test_hook_failure_is_contained_and_alerted(self):
+        notes = []
+        def boom(ids):
+            raise RuntimeError("scheduler exploded")
+        eng = make_engine(self.tmp.name, lambda t, v: [],
+                          notify_fn=lambda sev, kind, msg: notes.append(kind),
+                          on_restored=boom)
+        with eng._action_lock:
+            eng._run_action({"type": "snapshot", "name": "pre", "targets": ["Z1"]})
+            text, ok = eng._run_action({"type": "restore", "name": "pre"})
+        self.assertTrue(ok, "a hook failure must not mark the (successful) restore failed")
+        self.assertIn("restore_followup", notes)
 
 
 class ResumeReconcile(unittest.TestCase):

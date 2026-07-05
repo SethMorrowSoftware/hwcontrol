@@ -187,7 +187,8 @@ three plain-language steps:
 As you fill it in, a **live preview** spells out exactly what will happen in plain
 English ("When the generator turns ON: switch OFF …; keep … running half-on/half-off,
 swapping every 15 min … When utility power returns: put every zone back exactly how
-it was."), so there are no surprises before you click **Create outage plan**.
+it was, then resume your daily programs."), so there are no surprises before you
+click **Create outage plan**.
 
 This creates two paired automations:
 
@@ -199,7 +200,13 @@ This creates two paired automations:
 2. **On utility** (`facility/generator/status` = `off`):
    - **stops** the rotation,
    - **restores** every zone from the `pre_generator` snapshot — exactly the mode,
-     setpoints, and hold each had before the outage.
+     setpoints, and hold each had before the outage,
+   - **re-asserts your daily programs**: the currently-active period of every
+     enabled program is applied immediately, so programmed zones resume the
+     regular schedule right away — not at the next period boundary, which could
+     be hours off (boundaries that fired during the outage were deliberately
+     skipped for rotated zones). Zones not covered by a program keep the
+     restored pre-outage state.
 
 To verify it without waiting for an outage, use **Run now** on either rule (this
 executes the actions immediately, ignoring the trigger — it works even if MQTT is
@@ -330,7 +337,7 @@ set, the payload is parsed as JSON and that dot-path is extracted first (e.g.
 |-----------------|------------------------------------------------------------------------------|
 | `set`           | Apply `values` (mode / heatSetpoint / coolSetpoint / hold / fan) to targets. |
 | `snapshot`      | Save targets' current settings under `name` for later restore. **Non-clobbering**: if a snapshot of that name already exists (an outage in progress) it's kept, so a retained "on" replayed after a restart can't overwrite the good pre-outage capture with the already-shed state. |
-| `restore`       | Restore every device saved in snapshot `name`, then clear the snapshot on full success so the next outage captures fresh. Zones that fail to restore keep the snapshot for a retry. |
+| `restore`       | Restore every device saved in snapshot `name`, then clear the snapshot on full success so the next outage captures fresh. Zones that fail to restore keep the snapshot for a retry. On full success the app re-asserts every daily program's active period, so programmed zones resume the regular schedule immediately. |
 | `rotate`        | Duty-cycle a group: keep a safe subset running, slide the window every `interval_minutes`; on/off units get `on_values` / `off_values`. |
 | `stop_rotation` | Stop the rotation with `rotation_id`.                                         |
 
