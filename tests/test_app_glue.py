@@ -18,6 +18,8 @@ os.chdir(_tmp)
 import app as app_mod  # noqa: E402
 os.chdir(_prev)
 
+from automation import AutomationEngine  # noqa: E402
+from scheduler import FacilityScheduler  # noqa: E402
 from state_store import StateStore  # noqa: E402
 
 
@@ -100,6 +102,100 @@ class ControlFieldWhitelist(unittest.TestCase):
         app_mod.apply_action("D1", {"fan": "Circulate"}, refresh=False)
         self.assertEqual(self.writes, [("fan", "D1", "Circulate")],
                          "a fan-only command must not trigger a setpoint write")
+
+
+class PostRestoreProgramResume(unittest.TestCase):
+    """on_zones_restored must re-assert every program's active period (the
+    user-visible symptom otherwise: after utility returns, zones sit at
+    pre-outage setpoints until the next period boundary)."""
+
+    def setUp(self):
+        self._orig = (app_mod.scheduler, app_mod.notify)
+        self.notes = []
+        app_mod.notify = lambda sev, kind, msg: self.notes.append((sev, kind))
+
+    def tearDown(self):
+        app_mod.scheduler, app_mod.notify = self._orig
+
+    def test_reasserts_active_periods_after_restore(self):
+        calls = []
+        class FakeScheduler:
+            def apply_all_active_now(self):
+                calls.append("asserted")
+        app_mod.scheduler = FakeScheduler()
+        app_mod.on_zones_restored(["Z1", "Z2"])
+        self.assertEqual(calls, ["asserted"])
+        self.assertEqual(self.notes, [], "success must not raise alerts")
+
+    def test_scheduler_failure_is_alerted_not_raised(self):
+        class FailingScheduler:
+            def apply_all_active_now(self):
+                raise RuntimeError("boom")
+        app_mod.scheduler = FailingScheduler()
+        app_mod.on_zones_restored(["Z1"])   # must not raise
+        self.assertEqual(self.notes, [("critical", "schedule")])
+
+    def test_noop_before_scheduler_ready(self):
+        app_mod.scheduler = None
+        app_mod.on_zones_restored(["Z1"])   # must not raise
+
+
+class EndToEndUtilityRestore(unittest.TestCase):
+    """The reported field scenario, end to end: generator ON (snapshot, shed,
+    rotate) then generator OFF (stop rotation, restore) must leave the daily
+    program back in control - its active period applied AFTER the restore."""
+
+    def test_program_resumes_after_off_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            seq = []   # ordered record of every write: ("zone"|"program", target, action)
+
+            sched = FacilityScheduler(
+                apply_fn=lambda t, a: seq.append(("program", t, dict(a))),
+                store_path=os.path.join(tmp, "sched.json"))
+            # One period at 00:00 every day -> always the active period.
+            sched.add_rule({"id": "prog", "days": [], "targets": ["Z1"],
+                            "periods": [{"time": "00:00",
+                                         "action": {"mode": "Heat", "heatSetpoint": 68}}]})
+
+            eng = AutomationEngine(
+                apply_fn=lambda t, v: seq.append(("zone", t, dict(v))) or [],
+                resolve_fn=lambda: ["Z1", "Z2"],
+                snapshot_read_fn=lambda d: {"mode": "Heat", "heatSetpoint": 62,
+                                            "thermostatSetpointStatus": "PermanentHold"},
+                notify_fn=lambda *a: None,
+                rules_path=os.path.join(tmp, "rules.json"),
+                snapshots_path=os.path.join(tmp, "snaps.json"),
+                trigger_state_path=os.path.join(tmp, "trig.json"),
+                rotations_path=os.path.join(tmp, "rots.json"),
+                on_restored=lambda ids: sched.apply_all_active_now())
+            trigger = lambda v: {"mode": "all", "retrigger": "on_change",
+                                 "conditions": [{"topic": "gen", "type": "equals", "value": v}]}
+            eng.add_rule({"id": "on", "name": "shed", "enabled": True, "trigger": trigger("on"),
+                          "actions": [
+                              {"type": "snapshot", "name": "pre", "targets": ["Z1", "Z2"]},
+                              {"type": "set", "targets": ["Z2"], "values": {"mode": "Off"}},
+                              {"type": "rotate", "rotation_id": "g", "targets": ["Z1"],
+                               "run_count": 1, "interval_minutes": 5,
+                               "on_values": {"mode": "Heat", "heatSetpoint": 66},
+                               "off_values": {"mode": "Off"}}]})
+            eng.add_rule({"id": "off", "name": "restore", "enabled": True, "trigger": trigger("off"),
+                          "actions": [{"type": "stop_rotation", "rotation_id": "g"},
+                                      {"type": "restore", "name": "pre"}]})
+
+            eng.handle_message("gen", "on")
+            seq.clear()
+            eng.handle_message("gen", "off")
+
+            program_writes = [s for s in seq if s[0] == "program"]
+            self.assertEqual(len(program_writes), 1,
+                             "the daily program must be re-asserted after the OFF message")
+            self.assertEqual(program_writes[0][2].get("heatSetpoint"), 68)
+            self.assertEqual(seq[-1][0], "program",
+                             "the program's active period must be applied AFTER the restore, "
+                             "so the schedule (not stale pre-outage values) has the last word")
+            zone_targets = [s[1] for s in seq if s[0] == "zone"]
+            self.assertEqual(sorted(zone_targets), ["Z1", "Z2"],
+                             "restore must still put every snapshotted zone back first")
 
 
 class StoreLocationHelpers(unittest.TestCase):

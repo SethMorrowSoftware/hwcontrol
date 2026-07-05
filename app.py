@@ -357,6 +357,25 @@ def apply_schedule_action(targets: Any, action: dict) -> list[str]:
     return apply_action(targets, action, refresh=False)
 
 
+def on_zones_restored(device_ids: list) -> None:
+    """After an automation restore returns zones to their pre-outage state,
+    immediately re-assert every enabled program's currently-active period —
+    the same thing startup does. Program boundaries that fired during the
+    outage were skipped for rotated zones, so without this a restored zone
+    would sit at stale pre-outage setpoints until the NEXT boundary (which can
+    be hours away). Zones not covered by any program keep the restored state."""
+    if not scheduler:
+        return
+    log.info("Restore completed for %d zone(s); re-asserting active schedule periods.",
+             len(device_ids))
+    try:
+        scheduler.apply_all_active_now()
+    except Exception as exc:
+        log.exception("Post-restore schedule assertion failed: %s", exc)
+        notify("critical", "schedule",
+               f"Zones were restored, but re-asserting the daily programs failed: {exc}")
+
+
 def handle_mqtt_command(device_id: str, command: dict) -> None:
     apply_action(device_id, command)
 
@@ -559,6 +578,7 @@ async def lifespan(app: FastAPI):
         notify_fn=notify,
         on_topics_changed=sync_automation_topics,
         hourly_write_budget=Config.RL_HOURLY_CAP,
+        on_restored=on_zones_restored,   # resume daily programs after a restore
     )
 
     if Config.MQTT_ENABLED:

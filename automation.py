@@ -84,6 +84,15 @@ Injected dependencies (kept generic so this module doesn't import the API client
   resolve_fn()                   -> list every known deviceID
   snapshot_read_fn(device_id)    -> current changeableValues dict for a device (or None)
   notify_fn(severity, kind, msg) -> raise an operator-facing alert
+  on_restored(device_ids)        -> optional; called after a restore action fully
+                                    succeeds. The app uses it to immediately
+                                    re-assert daily programs' active periods, so
+                                    zones resume the regular schedule the moment
+                                    utility power returns (program boundaries that
+                                    fired during the outage were skipped for
+                                    rotated zones - without this, a restored zone
+                                    would sit at its pre-outage setpoints until
+                                    the NEXT boundary, potentially hours away).
 """
 
 from __future__ import annotations
@@ -157,12 +166,14 @@ class AutomationEngine:
         rotations_path: str = "rotations.json",
         on_topics_changed: Optional[Callable[[], None]] = None,
         hourly_write_budget: Optional[int] = None,
+        on_restored: Optional[Callable[[list], None]] = None,
     ):
         self.apply_fn = apply_fn
         self.resolve_fn = resolve_fn
         self.snapshot_read_fn = snapshot_read_fn
         self.notify_fn = notify_fn
         self.on_topics_changed = on_topics_changed
+        self.on_restored = on_restored
         # The API-call budget shared with polling (Config.RL_HOURLY_CAP). Used
         # only to WARN when a rotation's implied write rate gets close to it -
         # limiter sleeps inside actions delay everything else the engine does.
@@ -657,6 +668,18 @@ class AutomationEngine:
             with self._lock:
                 self._snapshots.pop(name, None)
             self._save_snapshots()
+            # Hand programmed zones back to their schedules NOW, not at the next
+            # period boundary - boundaries that fired during the outage were
+            # deliberately skipped for rotated zones. Fires only on FULL success
+            # (a partial restore retries on the next matching message instead).
+            if self.on_restored:
+                try:
+                    self.on_restored(list(snap.keys()))
+                except Exception as exc:
+                    log.error("on_restored hook failed after '%s': %s", name, exc)
+                    self.notify_fn("critical", "restore_followup",
+                                   f"Zones restored, but the post-restore schedule "
+                                   f"re-assert failed: {exc}")
             return f"restore '{name}' ({len(snap)} zone(s))", True
 
         if atype == "rotate":
