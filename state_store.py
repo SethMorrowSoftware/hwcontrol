@@ -41,6 +41,11 @@ def _normalize(raw: dict) -> dict:
     humidity = _num(raw.get("indoorHumidity"))
     if humidity is None:
         humidity = _num(raw.get("displayedIndoorHumidity"))
+    # Fan lives under settings.fan on LCC devices; absent elsewhere. Guard every
+    # level so a device without fan data just reports None/[] and the dashboard
+    # hides its fan control.
+    fan = (raw.get("settings") or {}).get("fan") or {}
+    fan_cv = fan.get("changeableValues") or {}
     return {
         "deviceID": raw.get("deviceID"),
         "name": raw.get("userDefinedDeviceName") or raw.get("name") or raw.get("deviceID"),
@@ -57,6 +62,9 @@ def _normalize(raw: dict) -> dict:
         "setpointStatus": cv.get("thermostatSetpointStatus"),
         "autoChangeoverActive": cv.get("autoChangeoverActive"),
         "nextPeriodTime": cv.get("nextPeriodTime"),
+        "fanMode": fan_cv.get("mode"),
+        "fanRunning": fan.get("fanRunning"),
+        "allowedFanModes": fan.get("allowedModes", []),
         "allowedModes": raw.get("allowedModes", []),
         "minHeatSetpoint": raw.get("minHeatSetpoint"),
         "maxHeatSetpoint": raw.get("maxHeatSetpoint"),

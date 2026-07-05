@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0b1016" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#eef1f5" media="(prefers-color-scheme: light)">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%234aa8f2'/%3E%3Cstop offset='1' stop-color='%23a78bfa'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='url(%23g)'/%3E%3Cpath d='M37 39.4V15a5 5 0 0 0-10 0v24.4a10 10 0 1 0 10 0z' fill='none' stroke='white' stroke-width='4.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <title>Facility Climate Control</title>
 <script>
   /* Set the theme before first paint to avoid a flash. */
@@ -20,57 +23,68 @@
   :root{
     --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
     --mono:ui-monospace,"SF Mono","Cascadia Code","Roboto Mono",Menlo,Consolas,monospace;
-    --r-sm:8px; --r:11px; --r-lg:16px; --r-pill:999px;
+    --r-sm:8px; --r:12px; --r-lg:16px; --r-pill:999px;
     --maxw:1400px;
     --heat:#f2994a; --cool:#4aa8f2; --auto:#a78bfa;
   }
   :root[data-theme="dark"]{
     color-scheme:dark;
-    --bg:#0d1218; --inset:#0a0e13;
-    --surface:#151c25; --surface-2:#1b2531; --surface-3:#222e3b;
-    --border:#28323f; --border-strong:#3a4756;
-    --text:#e6edf3; --muted:#9aa7b3; --faint:#6b7887;
-    --accent:#4aa8f2; --accent-ink:#04233c;
-    --heat-ink:#3a2410; --heat-soft:#38291a; --heat-line:#7a5326;
+    --bg:#0b1016; --inset:#090d12;
+    --surface:#141c26; --surface-2:#1a2431; --surface-3:#22303f;
+    --border:#27323f; --border-strong:#3b4858;
+    --text:#e8eef5; --muted:#9aa8b6; --faint:#6c7a8a;
+    --accent:#4da6f5; --accent-ink:#04233c;
+    --heat-ink:#3a2410; --heat-soft:#382a1a; --heat-line:#7a5326;
     --cool-soft:#12314a; --cool-line:#2f6a9c;
     --auto-soft:#2a2545; --auto-line:#5b4da8;
-    --ok:#42c058; --warn:#e0b23c; --crit:#f5564a;
+    --ok:#3fc45c; --warn:#e0b23c; --crit:#f5564a;
     --ok-soft:#123322; --warn-soft:#3a3016; --crit-soft:#3a1e1e;
-    --shadow:0 1px 2px rgba(0,0,0,.4),0 6px 22px rgba(0,0,0,.28);
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 26px rgba(0,0,0,.3);
     --shadow-sm:0 1px 2px rgba(0,0,0,.35);
-    --skel:linear-gradient(90deg,#1a232e 25%,#212c39 37%,#1a232e 63%);
-    --scrim:rgba(4,7,10,.6);
+    --skel:linear-gradient(90deg,#19222d 25%,#212c39 37%,#19222d 63%);
+    --scrim:rgba(4,7,10,.62);
   }
   :root[data-theme="light"]{
     color-scheme:light;
-    --bg:#eef1f5; --inset:#e6ebf1;
+    --bg:#eef1f5; --inset:#e7ecf2;
     --surface:#ffffff; --surface-2:#f3f6f9; --surface-3:#e9eef4;
-    --border:#dce3ea; --border-strong:#c4cfdb;
-    --text:#17212b; --muted:#556370; --faint:#8592a0;
-    --accent:#1f7fd6; --accent-ink:#ffffff;
+    --border:#dce3ea; --border-strong:#c2cdd9;
+    --text:#141e28; --muted:#53616e; --faint:#83909e;
+    --accent:#1e7cd2; --accent-ink:#ffffff;
     --heat:#d9772a; --cool:#1f7fd6; --auto:#7458e6;
     --heat-ink:#ffffff; --heat-soft:#fbeadb; --heat-line:#eab98d;
     --cool-soft:#e3f0fb; --cool-line:#a8d1f2;
     --auto-soft:#efeafd; --auto-line:#c8bcf5;
     --ok:#1a7f37; --warn:#9a6700; --crit:#cf222e;
     --ok-soft:#e6f4ea; --warn-soft:#fbf1d6; --crit-soft:#fce8e8;
-    --shadow:0 1px 2px rgba(16,24,40,.06),0 6px 18px rgba(16,24,40,.09);
+    --shadow:0 1px 2px rgba(16,24,40,.06),0 8px 22px rgba(16,24,40,.1);
     --shadow-sm:0 1px 2px rgba(16,24,40,.07);
     --skel:linear-gradient(90deg,#e9eef4 25%,#f1f5f9 37%,#e9eef4 63%);
-    --scrim:rgba(20,28,38,.35);
+    --scrim:rgba(20,28,38,.4);
   }
 
   /* ============================ base ============================ */
   *{box-sizing:border-box}
+  /* keep the hidden attribute authoritative even for elements whose class sets
+     a display (e.g. .btn{display:inline-flex} on the "Cancel edit" buttons) */
+  [hidden]{display:none!important}
   html,body{margin:0}
   body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:15px;
     line-height:1.5;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  /* faint ambient glow at the top of the page — pure decoration */
+  body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+    background:radial-gradient(1100px 480px at 50% -12%,
+      color-mix(in srgb,var(--accent) 8%,transparent),transparent 65%)}
   h1,h2,h3{margin:0}
   a{color:var(--accent);text-decoration:none}
   button{font-family:inherit;color:inherit}
+  /* numbers line up in columns wherever they update live */
+  .temp,.stepper .val,.count,.ts,.stat,.cid,.zs,.stat-item{font-variant-numeric:tabular-nums}
   ::selection{background:color-mix(in srgb,var(--accent) 35%,transparent)}
   *:focus{outline:none}
   *:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+  input:focus-visible,select:focus-visible{outline:none;border-color:var(--accent)!important;
+    box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}
   .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
     clip:rect(0,0,0,0);white-space:nowrap;border:0}
   .skip{position:absolute;left:8px;top:-60px;z-index:200;background:var(--accent);
@@ -85,20 +99,23 @@
     border:3px solid transparent;background-clip:content-box}
 
   /* ============================ header ============================ */
-  header{position:sticky;top:0;z-index:30;background:color-mix(in srgb,var(--bg) 88%,transparent);
-    backdrop-filter:blur(10px);border-bottom:1px solid var(--border)}
+  header{position:sticky;top:0;z-index:30;background:color-mix(in srgb,var(--bg) 86%,transparent);
+    backdrop-filter:blur(12px) saturate(1.25);border-bottom:1px solid var(--border)}
   .bar{display:flex;align-items:center;gap:16px;padding:12px 22px;max-width:var(--maxw);margin:0 auto}
   .brand{display:flex;align-items:center;gap:11px;margin-right:auto;min-width:0}
-  .brand .mark{width:34px;height:34px;border-radius:10px;flex:none;display:grid;place-items:center;
-    background:linear-gradient(140deg,var(--cool),var(--auto));color:#fff;box-shadow:var(--shadow-sm)}
+  .brand .mark{width:36px;height:36px;border-radius:11px;flex:none;display:grid;place-items:center;
+    background:linear-gradient(140deg,var(--cool),var(--auto));color:#fff;
+    box-shadow:var(--shadow-sm),inset 0 1px 0 rgba(255,255,255,.25)}
   .brand .mark svg{width:19px;height:19px}
   .brand .txt{min-width:0}
   .brand h1{font-size:15.5px;font-weight:650;letter-spacing:.01em;white-space:nowrap;
     overflow:hidden;text-overflow:ellipsis}
   .brand .sub{font-size:11.5px;color:var(--muted);font-family:var(--mono)}
 
-  .status{display:flex;align-items:center;gap:14px;font-size:12px;color:var(--muted);flex-wrap:wrap}
-  .stat-item{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+  .status{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+  .stat-item{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;
+    background:var(--surface);border:1px solid var(--border);padding:5px 11px;
+    border-radius:var(--r-pill);box-shadow:var(--shadow-sm)}
   .stat-item b{color:var(--text);font-weight:600}
   .dot{width:8px;height:8px;border-radius:50%;background:var(--faint);flex:none;position:relative}
   .dot.on{background:var(--ok)}
@@ -118,11 +135,17 @@
   nav.tabs button{background:none;border:none;color:var(--muted);padding:12px 14px;cursor:pointer;
     font-size:13.5px;font-weight:500;border-bottom:2px solid transparent;white-space:nowrap;
     display:inline-flex;align-items:center;gap:7px;transition:color .15s}
+  nav.tabs button svg{width:15px;height:15px;flex:none;opacity:.7;transition:opacity .15s,color .15s}
   nav.tabs button:hover{color:var(--text)}
   nav.tabs button.active{color:var(--text);border-bottom-color:var(--accent)}
+  nav.tabs button.active svg{opacity:1;color:var(--accent)}
   nav.tabs .count{min-width:20px;padding:1px 7px;border-radius:var(--r-pill);font-size:11px;
-    font-family:var(--mono);background:var(--surface-2);color:var(--muted);line-height:1.5}
+    font-family:var(--mono);background:var(--surface-2);color:var(--muted);line-height:1.5;
+    transition:background .15s,color .15s}
   nav.tabs button.active .count{background:color-mix(in srgb,var(--accent) 20%,transparent);color:var(--accent)}
+  /* the Alerts badge signals the worst live severity, even when the tab is inactive */
+  nav.tabs button .count.crit,nav.tabs button.active .count.crit{background:var(--crit-soft);color:var(--crit)}
+  nav.tabs button .count.warn,nav.tabs button.active .count.warn{background:var(--warn-soft);color:var(--warn)}
 
   main{max-width:var(--maxw);margin:0 auto;padding:22px}
   .view{display:none}
@@ -137,10 +160,12 @@
   .btn:hover{background:var(--surface-3);border-color:var(--border-strong)}
   .btn:active{transform:scale(.97)}
   .btn:disabled{opacity:.5;cursor:not-allowed}
-  .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
-  .btn.primary:hover{background:color-mix(in srgb,var(--accent) 88%,#fff);border-color:transparent}
-  .btn.warm{background:var(--heat);border-color:var(--heat);color:var(--heat-ink);font-weight:600}
-  .btn.warm:hover{background:color-mix(in srgb,var(--heat) 88%,#fff)}
+  .btn.primary{background:linear-gradient(180deg,color-mix(in srgb,var(--accent) 88%,#fff),var(--accent));
+    border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+  .btn.primary:hover{background:color-mix(in srgb,var(--accent) 86%,#fff);border-color:transparent}
+  .btn.warm{background:linear-gradient(180deg,color-mix(in srgb,var(--heat) 88%,#fff),var(--heat));
+    border-color:var(--heat);color:var(--heat-ink);font-weight:600}
+  .btn.warm:hover{background:color-mix(in srgb,var(--heat) 84%,#fff)}
   .btn.ghost{background:transparent}
   .btn.ghost:hover{background:var(--surface-2)}
   .btn.danger{background:transparent;border-color:transparent;color:var(--crit);padding:8px 10px}
@@ -164,12 +189,30 @@
   .banner .b-title{font-weight:650;margin-bottom:2px}
   .banner .b-sub{color:var(--muted);font-size:13px}
 
+  /* ============================ zones toolbar ============================ */
+  .toolbar{display:flex;align-items:center;gap:10px 12px;flex-wrap:wrap;margin-bottom:16px}
+  .searchwrap{position:relative;flex:0 1 300px;min-width:220px}
+  .searchwrap svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);
+    width:15px;height:15px;color:var(--faint);pointer-events:none}
+  /* specificity beats the generic input[type=search] rule in the forms section,
+     so the left padding clears the magnifier icon */
+  .searchwrap input[type=search]{width:100%;padding:8px 14px 8px 35px;border-radius:var(--r-pill);
+    background:var(--surface);border:1px solid var(--border);color:var(--text);font-size:13px}
+  .searchwrap input::-webkit-search-cancel-button{cursor:pointer}
+  .zsum{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto;
+    font-size:12px;color:var(--muted)}
+  .zs{display:inline-flex;align-items:center;gap:6px;padding:5px 11px;white-space:nowrap;
+    border-radius:var(--r-pill);background:var(--surface);border:1px solid var(--border)}
+  .zs b{color:var(--text);font-weight:650}
+  .zs .sw{width:8px;height:8px;border-radius:3px;flex:none}
+  .zs.plain{border:none;background:none;padding:5px 2px;color:var(--faint)}
+
   /* ============================ zone grid ============================ */
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:16px}
   .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);
     padding:16px 18px 18px;position:relative;overflow:hidden;box-shadow:var(--shadow-sm);
-    transition:border-color .15s,box-shadow .15s}
-  .card:hover{box-shadow:var(--shadow)}
+    transition:border-color .15s,box-shadow .15s,transform .15s}
+  .card:hover{box-shadow:var(--shadow);transform:translateY(-1px);border-color:var(--border-strong)}
   .card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--faint)}
   .card.mode-heat::before{background:var(--heat)}
   .card.mode-cool::before{background:var(--cool)}
@@ -189,6 +232,13 @@
   .readout{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin:4px 0 15px}
   .temp{font-family:var(--mono);font-size:46px;font-weight:650;line-height:.9;letter-spacing:-.02em}
   .temp .u{font-size:18px;color:var(--muted);font-weight:400;margin-left:1px}
+  /* what the zone is set to do right now (its live target, not pending edits) */
+  .zstate{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;
+    margin-top:9px;padding:3px 10px;border-radius:var(--r-pill);white-space:nowrap;
+    border:1px solid var(--border);background:var(--surface-2);color:var(--muted)}
+  .zstate.heat{background:var(--heat-soft);border-color:var(--heat-line);color:var(--heat)}
+  .zstate.cool{background:var(--cool-soft);border-color:var(--cool-line);color:var(--cool)}
+  .zstate.auto{background:var(--auto-soft);border-color:var(--auto-line);color:var(--auto)}
   .meta{font-size:12px;color:var(--muted);text-align:right;line-height:1.7}
   .meta .m{display:inline-flex;align-items:center;gap:5px;justify-content:flex-end}
   .meta svg{width:13px;height:13px;opacity:.75}
@@ -218,10 +268,24 @@
   .stepper{display:flex;align-items:center;justify-content:space-between;margin-top:6px}
   .stepper button{width:30px;height:30px;border-radius:7px;border:1px solid var(--border);
     background:var(--surface-2);color:var(--text);font-size:17px;cursor:pointer;line-height:1;
-    display:grid;place-items:center;transition:background .12s,border-color .12s}
+    display:grid;place-items:center;transition:background .12s,border-color .12s;
+    touch-action:manipulation;user-select:none;-webkit-user-select:none}
   .stepper button:hover{background:var(--surface-3);border-color:var(--border-strong)}
+  .stepper button:active{background:var(--surface-3);transform:scale(.95)}
   .stepper button:disabled{opacity:.4;cursor:not-allowed}
   .stepper .val{font-family:var(--mono);font-size:21px;font-weight:650}
+
+  /* per-zone fan mode (only shown when the device reports fan capability) */
+  .fanrow{display:flex;align-items:center;gap:10px;margin-bottom:13px}
+  .fanrow .fanlbl{font-size:10px;letter-spacing:.09em;text-transform:uppercase;
+    color:var(--muted);font-weight:600;flex:none}
+  .fanrow .modes{flex:1;margin-bottom:0;padding:2px}
+  .fanrow .chip{padding:4px 4px;font-size:11.5px}
+  .chip.sel[data-fan]{background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent)}
+
+  /* small advisory line inside a card (unsaved edits, sole-control notes) */
+  .cardnote{font-size:11px;color:var(--warn);margin-top:6px;line-height:1.5}
+  .cardnote.accent{color:var(--accent)}
 
   .field{position:relative;margin-bottom:2px}
   select,input{font-family:var(--sans)}
@@ -241,6 +305,9 @@
     padding:20px;margin-bottom:18px;box-shadow:var(--shadow-sm)}
   .card-lg.accent{border-top:3px solid var(--heat)}
   .card-lg h3{font-size:15.5px;font-weight:650;margin-bottom:5px;display:flex;align-items:center;gap:9px}
+  /* fields placed directly in a card (the wizard's zone pickers) need their own
+     spacing — they don't get the form-grid's gap */
+  .card-lg>.fld{margin-bottom:16px}
   .card-lg h3 svg{width:18px;height:18px;color:var(--heat)}
   .desc{color:var(--muted);font-size:13px;margin-bottom:18px;max-width:70ch}
   .form-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:15px}
@@ -365,6 +432,18 @@
   details.adv[open]>summary::before{transform:rotate(45deg)}
 
   /* ============================ alerts ============================ */
+  .filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+  .fchip{display:inline-flex;align-items:center;gap:7px;padding:6px 13px;cursor:pointer;
+    border-radius:var(--r-pill);border:1px solid var(--border);background:var(--surface);
+    color:var(--muted);font-size:12.5px;font-weight:500;
+    transition:background .12s,border-color .12s,color .12s}
+  .fchip:hover{border-color:var(--border-strong);color:var(--text)}
+  .fchip.on{background:color-mix(in srgb,var(--accent) 14%,transparent);
+    border-color:color-mix(in srgb,var(--accent) 45%,transparent);color:var(--accent);font-weight:600}
+  .fchip .sdot{width:7px;height:7px;border-radius:50%;flex:none}
+  .fchip .n{font-family:var(--mono);font-size:11px;background:var(--surface-2);
+    padding:1px 7px;border-radius:var(--r-pill)}
+  .fchip.on .n{background:color-mix(in srgb,var(--accent) 16%,transparent)}
   .alert{display:flex;align-items:center;gap:13px;padding:13px 16px;border-radius:var(--r);
     background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--faint);
     margin-bottom:8px;box-shadow:var(--shadow-sm)}
@@ -393,12 +472,13 @@
   @keyframes shimmer{0%{background-position:100% 0}100%{background-position:-100% 0}}
 
   /* ============================ toast ============================ */
-  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(12px);
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(14px) scale(.97);
     background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--r);
     padding:12px 16px;font-size:13px;font-weight:500;z-index:60;box-shadow:var(--shadow);
-    display:flex;align-items:center;gap:10px;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;
+    display:flex;align-items:center;gap:10px;opacity:0;pointer-events:none;
+    transition:opacity .2s,transform .2s cubic-bezier(.2,.9,.3,1.2);
     max-width:calc(100vw - 32px)}
-  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0) scale(1)}
   .toast .t-ic{width:18px;height:18px;flex:none;display:grid;place-items:center}
   .toast .t-ic svg{width:18px;height:18px}
   .toast.ok .t-ic{color:var(--ok)} .toast.err{border-color:var(--crit)} .toast.err .t-ic{color:var(--crit)}
@@ -435,7 +515,7 @@
     .bar{flex-wrap:wrap;gap:10px 14px;padding:12px 16px}
     .brand{margin-right:0;order:1}
     .actions{order:2;margin-left:auto}
-    .status{order:3;width:100%;gap:12px}
+    .status{order:3;width:100%;gap:8px}
     nav.tabs{padding:0 10px}
     main{padding:16px}
     .form-grid{grid-template-columns:1fr}
@@ -443,6 +523,11 @@
     .rule{flex-wrap:wrap;gap:10px}
     .rule .when{min-width:0}
     .rule .what{flex-basis:100%;order:3}
+    .searchwrap{flex:1 1 100%}
+    .zsum{margin-left:0}
+    /* comfortable touch targets for the setpoint steppers */
+    .stepper button{width:40px;height:40px;border-radius:9px}
+    .card:hover{transform:none}
   }
   @media(prefers-reduced-motion:reduce){
     *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;
@@ -467,9 +552,9 @@
 
     <div class="status" role="status" aria-live="off">
       <span class="conn" id="connState"><span class="dot off"></span>Offline — reconnecting…</span>
-      <span class="stat-item"><span class="dot" id="authDot"></span><span id="authText">checking…</span></span>
-      <span class="stat-item"><span class="dot" id="mqttDot"></span>MQTT</span>
-      <span class="stat-item" id="pollText">—</span>
+      <span class="stat-item" title="Honeywell account connection"><span class="dot" id="authDot"></span><span id="authText">checking…</span></span>
+      <span class="stat-item" title="MQTT broker link (feeds automations)"><span class="dot" id="mqttDot"></span>MQTT</span>
+      <span class="stat-item" title="Last update from the Honeywell API" id="pollText">—</span>
     </div>
 
     <div class="actions">
@@ -483,10 +568,10 @@
 
   <div class="tabwrap">
     <nav class="tabs" role="tablist" aria-label="Sections">
-      <button role="tab" id="tab-zones" aria-controls="view-zones" aria-selected="true" data-tab="zones" class="active">Zones <span class="count" id="zoneCount">0</span></button>
-      <button role="tab" id="tab-automations" aria-controls="view-automations" aria-selected="false" tabindex="-1" data-tab="automations">Automations <span class="count" id="autoCount">0</span></button>
-      <button role="tab" id="tab-schedules" aria-controls="view-schedules" aria-selected="false" tabindex="-1" data-tab="schedules">Schedules <span class="count" id="schedCount">0</span></button>
-      <button role="tab" id="tab-alerts" aria-controls="view-alerts" aria-selected="false" tabindex="-1" data-tab="alerts">Alerts <span class="count" id="alertCount">0</span></button>
+      <button role="tab" id="tab-zones" aria-controls="view-zones" aria-selected="true" data-tab="zones" class="active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 14.76V5a2 2 0 0 0-4 0v9.76a4 4 0 1 0 4 0z"/></svg>Zones <span class="count" id="zoneCount">0</span></button>
+      <button role="tab" id="tab-automations" aria-controls="view-automations" aria-selected="false" tabindex="-1" data-tab="automations"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Automations <span class="count" id="autoCount">0</span></button>
+      <button role="tab" id="tab-schedules" aria-controls="view-schedules" aria-selected="false" tabindex="-1" data-tab="schedules"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Schedules <span class="count" id="schedCount">0</span></button>
+      <button role="tab" id="tab-alerts" aria-controls="view-alerts" aria-selected="false" tabindex="-1" data-tab="alerts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>Alerts <span class="count" id="alertCount">0</span></button>
     </nav>
   </div>
 </header>
@@ -496,6 +581,13 @@
   <div id="pollBanner"></div>
 
   <section class="view active" id="view-zones" role="tabpanel" aria-labelledby="tab-zones" tabindex="0">
+    <div class="toolbar" id="zoneToolbar" hidden>
+      <div class="searchwrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="zoneSearch" type="search" placeholder="Filter zones by name or ID…" aria-label="Filter zones by name or ID">
+      </div>
+      <div class="zsum" id="zoneSummary" role="status" aria-live="off"></div>
+    </div>
     <div class="grid" id="zoneGrid"></div>
   </section>
 
@@ -669,6 +761,7 @@
   </section>
 
   <section class="view" id="view-alerts" role="tabpanel" aria-labelledby="tab-alerts" tabindex="0" hidden>
+    <div class="filters" id="alertFilters" hidden></div>
     <div id="alertList"></div>
   </section>
 </main>
@@ -709,7 +802,7 @@ const HDRS = TOKEN ? {"X-Token":TOKEN} : {};
 const qp = TOKEN ? ("?token="+encodeURIComponent(TOKEN)) : "";
 
 const state = { devices:[], pending:{}, autoStatus:{}, loaded:false, status:null,
-  soleControl:true, devicesTs:null };
+  soleControl:true, devicesTs:null, zoneQuery:"", alerts:[], alertFilter:"all" };
 
 /* ---------- inline icons ---------- */
 const IC = {
@@ -719,6 +812,7 @@ const IC = {
   warning:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
   info:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
   droplet:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/></svg>',
+  wind:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27A2.5 2.5 0 1 1 19.5 12H2"/></svg>',
   thermo:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 14.76V5a2 2 0 0 0-4 0v9.76a4 4 0 1 0 4 0z"/></svg>',
   plug:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>',
   inbox:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>',
@@ -864,13 +958,15 @@ function controlSource(d){
    (scheduler/load-shed setback) is no longer masked and reverted on Apply. */
 function ensurePending(d){
   let p=state.pending[d.deviceID];
-  const live={mode:d.mode,heat:d.heatSetpoint,cool:d.coolSetpoint,hold:d.setpointStatus||"TemporaryHold"};
+  const live={mode:d.mode,heat:d.heatSetpoint,cool:d.coolSetpoint,
+    hold:d.setpointStatus||"TemporaryHold",fan:d.fanMode};
   if(!p){ p=state.pending[d.deviceID]=Object.assign({dirty:new Set()},live); return p; }
   if(!(p.dirty instanceof Set)) p.dirty=new Set();   // migrate any legacy shape
   if(!p.dirty.has("mode")) p.mode=live.mode;
   if(!p.dirty.has("heat")) p.heat=live.heat;
   if(!p.dirty.has("cool")) p.cool=live.cool;
   if(!p.dirty.has("hold")) p.hold=live.hold;
+  if(!p.dirty.has("fan")) p.fan=live.fan;
   return p;
 }
 function clamp(v,lo,hi){ if(lo!=null&&v<lo)v=lo; if(hi!=null&&v>hi)v=hi; return v; }
@@ -886,6 +982,7 @@ function step(id,key,delta){
 }
 function setMode(id,m){ const p=state.pending[id]; if(!p) return; p.mode=m; p.dirty.add("mode"); renderZones(); }
 function setHold(id,v){ const p=state.pending[id]; if(!p) return; p.hold=v; p.dirty.add("hold"); renderZones(); }
+function setFan(id,m){ const p=state.pending[id]; if(!p) return; p.fan=m; p.dirty.add("fan"); renderZones(); }
 
 async function applyZone(id,btn){
   const p=state.pending[id]; if(!p) return;
@@ -896,6 +993,7 @@ async function applyZone(id,btn){
   if(p.dirty.has("heat")&&p.heat!=null) body.heatSetpoint=p.heat;
   if(p.dirty.has("cool")&&p.cool!=null) body.coolSetpoint=p.cool;
   if(p.dirty.has("hold")&&p.hold!=null) body.thermostatSetpointStatus=p.hold;
+  if(p.dirty.has("fan")&&p.fan!=null) body.fan=p.fan;
   if(!Object.keys(body).length){ toast("No changes to apply"); return; }
   try{
     await withBusy(btn,()=>api("/api/devices/"+id+"/set",{method:"POST",body:JSON.stringify(body)}));
@@ -908,9 +1006,46 @@ function deviceName(id){ const d=state.devices.find(x=>x.deviceID===id); return 
 function skeletonGrid(){
   return Array.from({length:6}).map(()=>`<div class="skel" aria-hidden="true"></div>`).join("");
 }
+function fmtT(v){ return v!=null?Math.round(v)+"°":"–°"; }
+/* The zone's live target — what the thermostat is currently set to do. Factual
+   (mode + setpoints as reported), not an inference about equipment state. */
+function zoneActivity(d){
+  if(!d.online) return {t:"Offline",cls:""};
+  const m=(d.mode||"").toLowerCase();
+  if(m==="heat") return {t:"Heat to "+fmtT(d.heatSetpoint),cls:"heat"};
+  if(m==="cool") return {t:"Cool to "+fmtT(d.coolSetpoint),cls:"cool"};
+  if(m==="auto") return {t:"Auto "+fmtT(d.heatSetpoint)+"–"+fmtT(d.coolSetpoint),cls:"auto"};
+  if(m==="off") return {t:"Off",cls:""};
+  return null;
+}
+/* Fleet summary chips above the grid: totals, reachability, and mode mix. */
+function renderZoneSummary(){
+  const tb=document.getElementById("zoneToolbar"), sum=document.getElementById("zoneSummary");
+  if(!tb||!sum) return;
+  tb.hidden=!state.devices.length;
+  if(!state.devices.length){ sum.innerHTML=""; return; }
+  const ds=state.devices;
+  const online=ds.filter(d=>d.online).length, offline=ds.length-online;
+  const bits=[`<span class="zs"><b>${ds.length}</b>&nbsp;zone${ds.length===1?"":"s"}</span>`,
+    `<span class="zs"><span class="dot on"></span><b>${online}</b>&nbsp;online</span>`];
+  if(offline) bits.push(`<span class="zs"><span class="dot off"></span><b>${offline}</b>&nbsp;offline</span>`);
+  for(const [k,v,label] of [["heat","--heat","Heat"],["cool","--cool","Cool"],
+      ["auto","--auto","Auto"],["off","--faint","Off"]]){
+    const c=ds.filter(d=>(d.mode||"").toLowerCase()===k).length;
+    if(c) bits.push(`<span class="zs"><span class="sw" style="background:var(${v})"></span><b>${c}</b>&nbsp;${label}</span>`);
+  }
+  if(state.devicesTs) bits.push(`<span class="zs plain" data-ago="${state.devicesTs}" data-prefix="updated ">updated ${esc(ago(state.devicesTs))}</span>`);
+  sum.innerHTML=bits.join("");
+}
+function clearZoneFilter(){
+  state.zoneQuery="";
+  const i=document.getElementById("zoneSearch"); if(i) i.value="";
+  renderZones();
+}
 function renderZones(){
   const grid=document.getElementById("zoneGrid");
   document.getElementById("zoneCount").textContent = state.devices.length||"0";
+  renderZoneSummary();
   if(!state.loaded){ grid.innerHTML=skeletonGrid(); return; }
   if(!state.devices.length){
     const s=state.status||{};
@@ -935,8 +1070,19 @@ function renderZones(){
       <div class="lede">${lede}</div></div>`;
     return;
   }
+  const q=(state.zoneQuery||"").trim().toLowerCase();
+  const shown=q?state.devices.filter(d=>
+    (d.name||"").toLowerCase().includes(q)||(d.deviceID||"").toLowerCase().includes(q)):state.devices;
+  if(!shown.length){
+    grid.innerHTML=`<div class="empty" style="grid-column:1/-1">
+      <div class="e-ic">${IC.thermo}</div>
+      <div class="big">No zones match “${esc(state.zoneQuery.trim())}”</div>
+      <div class="lede">Try a different name or device ID.</div>
+      <div style="margin-top:14px"><button class="btn sm" onclick="clearZoneFilter()">Clear filter</button></div></div>`;
+    return;
+  }
   grid.innerHTML="";
-  for(const d of state.devices){
+  for(const d of shown){
     const p=ensurePending(d);
     const off = !d.online;                 // lock controls (not just dim) when offline
     const dis = off?" disabled":"";
@@ -950,15 +1096,25 @@ function renderZones(){
     const meta=[];
     if(d.indoorHumidity!=null) meta.push(`<span class="m">${IC.droplet}${d.indoorHumidity}%</span>`);
     if(d.outdoorTemperature!=null) meta.push(`<span class="m">${IC.thermo}${Math.round(d.outdoorTemperature)}° out</span>`);
+    if(d.fanRunning===true) meta.push(`<span class="m" title="The fan is currently running">${IC.wind}fan on</span>`);
     const src = controlSource(d);
     if(src) meta.push(`<span class="m src ${src.cls}" title="${esc(src.tip)}">${esc(src.t)}</span>`);
+    const act=zoneActivity(d);
+    const fans=d.allowedFanModes||[];
+    const fanRow=fans.length?`
+      <div class="fanrow"><span class="fanlbl">Fan</span>
+        <div class="modes" role="group" aria-label="Fan mode for ${esc(d.name)}">${fans.map(f=>
+          `<button class="chip ${p.fan===f?'sel':''}" data-fan="${esc(f)}" aria-pressed="${p.fan===f}"${dis} onclick="setFan('${did}','${jsAttr(f)}')">${esc(f)}</button>`).join("")}</div></div>`:'';
     card.innerHTML = `
       <div class="chead">
-        <div><div class="cname">${esc(d.name)}</div><div class="cid">${esc(d.deviceID)}${state.devicesTs?` · <span class="stale" data-since="${state.devicesTs}">as of ${esc(ago(state.devicesTs))}</span>`:''}</div></div>
+        <div><div class="cname" title="${esc(d.name)}">${esc(d.name)}</div><div class="cid">${esc(d.deviceID)}${state.devicesTs?` · <span class="stale" data-ago="${state.devicesTs}" data-prefix="as of ">as of ${esc(ago(state.devicesTs))}</span>`:''}</div></div>
         <span class="badge ${d.online?'':'off'}"><span class="dot ${d.online?'on':'off'}"></span>${d.online?'ONLINE':'OFFLINE'}</span>
       </div>
       <div class="readout">
-        <div class="temp">${temp}<span class="u">°${esc(unit)}</span></div>
+        <div>
+          <div class="temp">${temp}<span class="u">°${esc(unit)}</span></div>
+          ${act?`<div class="zstate ${act.cls}">${esc(act.t)}</div>`:''}
+        </div>
         <div class="meta">${meta.join("<br>")||"&nbsp;"}</div>
       </div>
       <div class="modes" role="group" aria-label="Mode for ${esc(d.name)}">${modes.map(m=>
@@ -966,15 +1122,16 @@ function renderZones(){
       <div class="sp">
         <div class="spbox heat"><div class="lbl">Heat</div>
           <div class="stepper">
-            <button aria-label="Lower heat setpoint"${dis} onclick="step('${did}','heat',-1)">−</button>
+            <button class="stepbtn" data-did="${esc(d.deviceID)}" data-key="heat" data-delta="-1" aria-label="Lower heat setpoint"${dis}>−</button>
             <span class="val">${p.heat!=null?p.heat:'–'}°</span>
-            <button aria-label="Raise heat setpoint"${dis} onclick="step('${did}','heat',1)">+</button></div></div>
+            <button class="stepbtn" data-did="${esc(d.deviceID)}" data-key="heat" data-delta="1" aria-label="Raise heat setpoint"${dis}>+</button></div></div>
         <div class="spbox cool"><div class="lbl">Cool</div>
           <div class="stepper">
-            <button aria-label="Lower cool setpoint"${dis} onclick="step('${did}','cool',-1)">−</button>
+            <button class="stepbtn" data-did="${esc(d.deviceID)}" data-key="cool" data-delta="-1" aria-label="Lower cool setpoint"${dis}>−</button>
             <span class="val">${p.cool!=null?p.cool:'–'}°</span>
-            <button aria-label="Raise cool setpoint"${dis} onclick="step('${did}','cool',1)">+</button></div></div>
+            <button class="stepbtn" data-did="${esc(d.deviceID)}" data-key="cool" data-delta="1" aria-label="Raise cool setpoint"${dis}>+</button></div></div>
       </div>
+      ${fanRow}
       <div class="field sel">
         <select aria-label="Hold mode for ${esc(d.name)}"${dis} onchange="setHold('${did}',this.value)">
           <option value="TemporaryHold" ${p.hold==='TemporaryHold'?'selected':''}>Hold until next schedule</option>
@@ -982,7 +1139,8 @@ function renderZones(){
           <option value="NoHold" ${p.hold==='NoHold'?'selected':''}${soleNo?' disabled':''}>Resume schedule${soleNo?' (sole control on)':''}</option>
         </select>
       </div>
-      ${soleNo?`<div style="font-size:11px;color:var(--warn);margin-top:6px">Sole Controller is on — “Resume schedule” is re-asserted as a hold on the next poll.</div>`:''}
+      ${soleNo?`<div class="cardnote">Sole Controller is on — “Resume schedule” is re-asserted as a hold on the next poll.</div>`:''}
+      ${p.dirty.size?`<div class="cardnote accent">Edited — changes are not sent until you Apply.</div>`:''}
       <div class="apply">
         <button class="btn ${modeClass(d)==='mode-heat'?'warm':'primary'}"${dis} onclick="applyZone('${did}',this)">Apply changes</button>
         ${p.dirty.size?`<button class="btn ghost" onclick="resetZone('${did}')">Reset</button>`:''}
@@ -990,6 +1148,32 @@ function renderZones(){
     grid.appendChild(card);
   }
 }
+
+/* Press-and-hold on the setpoint steppers: one step on press, then repeat while
+   held (clamped at the device's min/max). Keyboard activation (Enter/Space fires
+   a click with detail 0) still steps one degree at a time. */
+(function(){
+  const grid=document.getElementById("zoneGrid");
+  if(!grid) return;
+  let t=null,iv=null;
+  const stop=()=>{ if(t){clearTimeout(t);t=null;} if(iv){clearInterval(iv);iv=null;} };
+  grid.addEventListener("pointerdown",e=>{
+    const b=e.target.closest(".stepbtn"); if(!b||b.disabled) return;
+    const did=b.dataset.did, key=b.dataset.key, delta=Number(b.dataset.delta);
+    stop(); step(did,key,delta);
+    let reps=0;
+    t=setTimeout(()=>{ iv=setInterval(()=>{
+      step(did,key,delta);
+      if(++reps>60) stop();          // safety cap if a release event is ever missed
+    },110); },450);
+  });
+  ["pointerup","pointercancel"].forEach(ev=>window.addEventListener(ev,stop));
+  window.addEventListener("blur",stop);
+  grid.addEventListener("click",e=>{
+    const b=e.target.closest(".stepbtn"); if(!b||b.disabled) return;
+    if(e.detail===0) step(b.dataset.did,b.dataset.key,Number(b.dataset.delta));
+  });
+})();
 
 async function loadDevices(){
   try{
@@ -1214,19 +1398,48 @@ async function restoreOnboard(id,btn){
 /* ---------- alerts ---------- */
 async function loadAlerts(){
   try{
-    const r=await api("/api/alerts"); const alerts=r.alerts||[];
-    document.getElementById("alertCount").textContent=alerts.length||"0";
-    const list=document.getElementById("alertList");
-    if(!alerts.length){ list.innerHTML=`<div class="empty"><div class="e-ic">${IC.ok}</div>
-      <div class="big">All clear</div>
-      <div class="lede">Offline zones, temperature excursions, and failed commands will show up here.</div></div>`; return; }
-    list.innerHTML="";
-    for(const a of alerts){ const sev=a.severity||"info"; const div=document.createElement("div");
-      div.className="alert "+sev;
-      div.innerHTML=`<span class="a-ic">${IC[sev]||IC.info}</span>
-        <span class="msg">${esc(a.message)}</span><span class="ts">${ago(a.ts)}</span>`;
-      list.appendChild(div); }
+    const r=await api("/api/alerts"); state.alerts=r.alerts||[];
+    renderAlerts();
   }catch(e){}
+}
+function fmtAbs(ts){ return ts?new Date(ts*1000).toLocaleString():""; }
+function renderAlerts(){
+  const alerts=state.alerts||[];
+  const count=s=>alerts.filter(a=>(a.severity||"info")===s).length;
+  const nCrit=count("critical"), nWarn=count("warning"), nInfo=alerts.length-nCrit-nWarn;
+  const cEl=document.getElementById("alertCount");
+  cEl.textContent=alerts.length||"0";
+  // The tab badge signals the worst live severity at a glance.
+  cEl.classList.toggle("crit",nCrit>0);
+  cEl.classList.toggle("warn",!nCrit&&nWarn>0);
+  const wrap=document.getElementById("alertFilters");
+  const list=document.getElementById("alertList");
+  if(!alerts.length){
+    if(wrap) wrap.hidden=true;
+    list.innerHTML=`<div class="empty"><div class="e-ic">${IC.ok}</div>
+      <div class="big">All clear</div>
+      <div class="lede">Offline zones, temperature excursions, and failed commands will show up here.</div></div>`;
+    return;
+  }
+  if(wrap){
+    wrap.hidden=false;
+    const chip=(key,label,n,dot)=>`<button class="fchip ${state.alertFilter===key?'on':''}" data-filter="${key}" aria-pressed="${state.alertFilter===key}">${dot?`<span class="sdot" style="background:var(--${dot})"></span>`:''}${label}<span class="n">${n}</span></button>`;
+    wrap.innerHTML=chip("all","All",alerts.length,null)+chip("critical","Critical",nCrit,"crit")
+      +chip("warning","Warning",nWarn,"warn")+chip("info","Info",nInfo,"accent");
+  }
+  const show=state.alertFilter==="all"?alerts:alerts.filter(a=>(a.severity||"info")===state.alertFilter);
+  if(!show.length){
+    list.innerHTML=`<div class="empty"><div class="e-ic">${IC.ok}</div>
+      <div class="big">No ${esc(state.alertFilter)} alerts</div>
+      <div class="lede">Nothing at this severity right now — pick another filter above.</div></div>`;
+    return;
+  }
+  list.innerHTML="";
+  for(const a of show){ const sev=a.severity||"info"; const div=document.createElement("div");
+    div.className="alert "+sev;
+    div.innerHTML=`<span class="a-ic">${IC[sev]||IC.info}</span>
+      <span class="msg">${esc(a.message)}</span><span class="ts" data-ago="${Number(a.ts)||0}" title="${esc(fmtAbs(a.ts))}">${ago(a.ts)}</span>`;
+    list.appendChild(div); }
 }
 
 /* ---------- automations ---------- */
@@ -1658,6 +1871,16 @@ bindRunModeToggle("a-runmode","a-run-wrap");
   card.addEventListener("change", updateGeneratorPreview);
 })();
 
+// zones toolbar: live filter (input sits outside the re-rendered grid, so focus survives)
+document.getElementById("zoneSearch").addEventListener("input",function(){
+  state.zoneQuery=this.value; renderZones();
+});
+// alert severity filters (delegated — chips are re-rendered with the counts)
+document.getElementById("alertFilters").addEventListener("click",e=>{
+  const b=e.target.closest(".fchip"); if(!b) return;
+  state.alertFilter=b.dataset.filter; renderAlerts();
+});
+
 document.getElementById("themeBtn").onclick=toggleTheme;
 document.getElementById("refreshBtn").onclick=function(){
   const btn=this;
@@ -1681,9 +1904,10 @@ document.getElementById("c-cancel").onclick=resetAutoForm;
 function tick(){
   document.getElementById("clock").textContent=
     new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-  // Keep every "as of Ns ago" staleness badge live, even while polls are failing.
-  document.querySelectorAll("[data-since]").forEach(el=>{
-    el.textContent="as of "+ago(Number(el.dataset.since)); });
+  // Keep every relative timestamp live ("as of 20s ago", "updated 1m ago",
+  // alert ages), even while polls are failing.
+  document.querySelectorAll("[data-ago]").forEach(el=>{
+    el.textContent=(el.dataset.prefix||"")+ago(Number(el.dataset.ago)); });
 }
 
 /* One poll cycle with an in-flight guard so slow/hung fetches don't stack up. */
