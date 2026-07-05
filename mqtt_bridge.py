@@ -21,6 +21,15 @@ Reliability notes (this is the path the generator load-shed rides on):
     operator alert. Without it the status lied ("connected" forever) and state
     publishes silently no-op'd on a dead socket during the one failure the system
     calls critical.
+  * Connection is established with connect_async(), so a broker that isn't up yet
+    (the app and Mosquitto racing to boot after a site-wide power blink) is retried
+    in the background instead of failing start() once and staying dead forever.
+  * Inbound trigger/command messages are handed to a single worker thread through
+    a queue. Handlers do rate-limited Honeywell writes that can take seconds to
+    minutes; running them on paho's network-loop thread would starve the MQTT
+    keepalive (dropping the connection mid-outage) and block reading the very next
+    message (e.g. "utility restored") until the current action finished. A single
+    worker preserves message order, which the on/off edge logic depends on.
 
 Topic layout (BASE defaults to "honeywell"):
 
@@ -49,7 +58,9 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import threading
+import time
 from typing import Callable, Optional
 
 try:
@@ -94,6 +105,13 @@ class MqttBridge:
         self._trigger_topics: set[str] = set()
         self._topics_lock = threading.Lock()
         self._connected = False
+        # Inbound work (trigger/command handler calls) runs on this single worker
+        # thread, in arrival order, so slow Honeywell writes never block the
+        # network loop. Unbounded on purpose: dropping a queued "utility restored"
+        # trigger would be worse than the few MB a long backlog could cost.
+        self._work: queue.Queue = queue.Queue()
+        self._worker: Optional[threading.Thread] = None
+        self._backlog_warned = 0.0
 
         # paho-mqtt 2.x requires an explicit callback API version; 1.x doesn't
         # know the argument. Pin to the v1 callback signatures either way so the
@@ -121,9 +139,17 @@ class MqttBridge:
 
     # ------------------------------------------------------------- lifecycle
 
+    _STOP = object()   # sentinel that shuts down the worker thread
+
     def start(self) -> None:
         log.info("Connecting to MQTT %s:%s", self.host, self.port)
-        self._client.connect(self.host, self.port, keepalive=60)
+        self._worker = threading.Thread(target=self._drain_work, name="mqtt-work", daemon=True)
+        self._worker.start()
+        # connect_async never raises on an unreachable broker: the network loop
+        # keeps retrying with the backoff configured in __init__. A plain
+        # connect() here would raise once at startup (e.g. Mosquitto still
+        # booting after a power blink) and leave MQTT dead until an app restart.
+        self._client.connect_async(self.host, self.port, keepalive=60)
         self._client.loop_start()  # runs the network loop in a background thread
 
     def stop(self) -> None:
@@ -142,6 +168,10 @@ class MqttBridge:
             self._client.loop_stop()
         except Exception:  # pragma: no cover
             pass
+        if self._worker is not None:
+            self._work.put(self._STOP)
+            self._worker.join(timeout=2)
+            self._worker = None
 
     @property
     def connected(self) -> bool:
@@ -208,16 +238,44 @@ class MqttBridge:
 
     # ------------------------------------------------------------- inbound
 
+    def _enqueue(self, kind: str, *args) -> None:
+        """Queue a handler call for the worker thread. Warn (rate-limited) if the
+        backlog grows - a sign the Honeywell rate limiter is throttling actions."""
+        self._work.put((kind, args))
+        depth = self._work.qsize()
+        if depth > 200 and time.monotonic() - self._backlog_warned > 60:
+            self._backlog_warned = time.monotonic()
+            log.warning("MQTT work backlog is %d messages deep; handlers are running "
+                        "slower than messages arrive (rate limiting?).", depth)
+
+    def _drain_work(self) -> None:
+        """Worker loop: run trigger/command handlers off the network thread, in
+        arrival order. Parsing already happened in _on_message; failures here are
+        logged and never kill the worker."""
+        while True:
+            item = self._work.get()
+            if item is self._STOP:
+                return
+            kind, args = item
+            try:
+                if kind == "trigger":
+                    if self.trigger_handler:
+                        self.trigger_handler(*args)
+                elif self.command_handler:
+                    self.command_handler(*args)
+            except Exception as exc:
+                log.error("MQTT %s handler failed for %s: %s", kind, args[0], exc)
+
     def _on_message(self, client, userdata, msg):
         # Automation trigger topics take priority and are matched exactly.
+        # Handlers run on the worker thread (see _drain_work) - this callback runs
+        # on paho's network loop, which must stay free to service keepalive and
+        # read the next message.
         with self._topics_lock:
             is_trigger = msg.topic in self._trigger_topics
         if is_trigger:
             if self.trigger_handler:
-                try:
-                    self.trigger_handler(msg.topic, msg.payload.decode(errors="replace"))
-                except Exception as exc:
-                    log.error("Trigger handler failed for %s: %s", msg.topic, exc)
+                self._enqueue("trigger", msg.topic, msg.payload.decode(errors="replace"))
             return
 
         if self.command_handler is None:
@@ -258,7 +316,7 @@ class MqttBridge:
                 # An empty/retained '{}' would still cost a real API refresh.
                 return
             log.info("MQTT command for %s: %s", device_id, command)
-            self.command_handler(device_id, command)
+            self._enqueue("command", device_id, command)
         except Exception as exc:
             log.error("Failed to handle MQTT message on %s: %s", msg.topic, exc)
 

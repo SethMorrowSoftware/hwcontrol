@@ -344,6 +344,13 @@ class StateStore:
         with self._lock:
             return self._location_of.get(device_id)
 
+    def device_ids_at(self, location_id: Any) -> list[str]:
+        """Device IDs last seen at a location. The poller uses this to detect a
+        location that previously had zones but transiently reported none - which
+        must block reaping, not evict the whole location."""
+        with self._lock:
+            return [d for d, l in self._location_of.items() if l == location_id]
+
     def all_device_ids(self) -> list[str]:
         with self._lock:
             return list(self._devices.keys())

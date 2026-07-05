@@ -156,12 +156,17 @@ class AutomationEngine:
         trigger_state_path: str = "trigger_state.json",
         rotations_path: str = "rotations.json",
         on_topics_changed: Optional[Callable[[], None]] = None,
+        hourly_write_budget: Optional[int] = None,
     ):
         self.apply_fn = apply_fn
         self.resolve_fn = resolve_fn
         self.snapshot_read_fn = snapshot_read_fn
         self.notify_fn = notify_fn
         self.on_topics_changed = on_topics_changed
+        # The API-call budget shared with polling (Config.RL_HOURLY_CAP). Used
+        # only to WARN when a rotation's implied write rate gets close to it -
+        # limiter sleeps inside actions delay everything else the engine does.
+        self._hourly_write_budget = hourly_write_budget
 
         self.rules_path = Path(rules_path)
         self.snapshots_path = Path(snapshots_path)
@@ -353,6 +358,21 @@ class AutomationEngine:
                 if int(a.get("interval_minutes", 0)) < MIN_ROTATION_MINUTES:
                     raise ValueError(f"rotate interval_minutes must be >= {MIN_ROTATION_MINUTES} "
                                      f"(protects compressors from short-cycling)")
+                # Advisory: a big group on a short interval can consume most of the
+                # hourly API budget (shared with polling), and limiter sleeps then
+                # stall every other action. Warn, don't block.
+                if self._hourly_write_budget:
+                    n_est = len(targets) or len(self.resolve_fn() or [])
+                    interval = max(int(a.get("interval_minutes", MIN_ROTATION_MINUTES) or
+                                       MIN_ROTATION_MINUTES), 1)
+                    per_hour = n_est * (60.0 / interval)
+                    if n_est and per_hour > 0.8 * self._hourly_write_budget:
+                        msg = (f"Rotation '{a.get('rotation_id')}' implies ~{int(per_hour)} control "
+                               f"writes/hour across {n_est} zone(s) - close to the API budget "
+                               f"({self._hourly_write_budget}/h, shared with polling). "
+                               "Consider a longer swap interval.")
+                        log.warning("%s", msg)
+                        self.notify_fn("warning", "rotation_rate", msg)
                 # A fixed run_count >= number of zones means nothing is ever shed -
                 # warn (only meaningful for the plain count mode).
                 if targets and "run_count" in a and "max_power" not in a \
@@ -394,12 +414,21 @@ class AutomationEngine:
         conditions = trig["conditions"]
         with self._lock:
             state = self._cond_state.get(rid)
+            changed = False        # did anything persistence-relevant change?
             if not state or len(state) != len(conditions):
                 state = [None] * len(conditions)
+                changed = True
             # Update every condition that watches the topic this message arrived on.
             for i, cond in enumerate(conditions):
                 if cond.get("topic") == topic:
                     matched, value = self._match(cond, payload)
+                    # Only the MATCHED flag drives edge detection across restarts;
+                    # the stored value is informational. Comparing just the flag
+                    # keeps a chatty topic (a load % published every second) from
+                    # forcing an fsync'd write per message - it persists only on
+                    # threshold crossings.
+                    if state[i] is None or bool(state[i][0]) != bool(matched):
+                        changed = True
                     state[i] = [matched, value]
             mode = trig.get("mode", "all")
             seen = [s for s in state if s is not None]
@@ -408,6 +437,7 @@ class AutomationEngine:
             else:  # all
                 overall = len(seen) == len(conditions) and all(s[0] for s in state)
             prev = self._last_overall.get(rid, False)
+            before_latch = self._last_overall.get(rid)
             self._cond_state[rid] = state
             on_change = trig.get("retrigger", "on_change") == "on_change"
             # Decide whether to fire now.
@@ -419,7 +449,10 @@ class AutomationEngine:
                 self._last_overall[rid] = False
             elif not fire:
                 self._last_overall[rid] = True
-        self._save_trigger_state()
+            if self._last_overall.get(rid) != before_latch:
+                changed = True
+        if changed:
+            self._save_trigger_state()
 
         if not fire:
             return
@@ -685,7 +718,9 @@ class AutomationEngine:
                 "index": 0, "current_on": set(), "job_id": f"rotation:{rid}",
             }
         # First tick now (drives the full desired state), then every interval.
-        self._rotation_tick(rid)
+        # _run_actions already holds _action_lock, so go straight to the body -
+        # _rotation_tick would deadlock re-acquiring the (non-reentrant) lock.
+        self._advance_and_drive(rid)
         self._sched.add_job(
             self._rotation_tick, IntervalTrigger(minutes=interval),
             args=[rid], id=f"rotation:{rid}", replace_existing=True,
@@ -725,7 +760,18 @@ class AutomationEngine:
         return window
 
     def _rotation_tick(self, rid: str) -> None:
-        """Advance the window one step and drive the full desired state."""
+        """Scheduled tick entry point. Serialized with rule actions via
+        _action_lock: without it an in-flight tick could interleave with a
+        concurrent stop_rotation + restore and land an Off write on a zone
+        AFTER the restore already wrote it (leaving that zone off while the
+        log reports a full restore)."""
+        with self._action_lock:
+            self._advance_and_drive(rid)
+
+    def _advance_and_drive(self, rid: str) -> None:
+        """Advance the window one step and drive the full desired state.
+        Caller must hold _action_lock (the action runner already does; the
+        scheduled tick acquires it in _rotation_tick)."""
         with self._lock:
             state = self._rotations.get(rid)
             if not state:
@@ -747,7 +793,13 @@ class AutomationEngine:
         BREAK-BEFORE-MAKE: outgoing units are turned OFF *before* incoming units are
         turned ON, so a swap never transiently exceeds the cap (which on a maxed
         generator could trip it). Incoming units are then started one at a time
-        (serialized by the client's rate limiter), staggering compressor inrush."""
+        (serialized by the client's rate limiter), staggering compressor inrush.
+
+        If an OFF (break) write FAILS, that unit may still be running - energizing
+        the full window on top of it could exceed the cap. Incoming units are held
+        back (least-priority end of the window first) until the held-back draw
+        covers the unconfirmed-off draw. Cap safety wins over immediacy: a
+        held-back zone starts at the next swap, when the off is retried."""
         with self._lock:
             state = self._rotations.get(rid)
             if not state:
@@ -755,23 +807,45 @@ class AutomationEngine:
             targets = list(state["targets"])
             on_values = dict(state["on_values"])
             off_values = dict(state["off_values"])
+            power = dict(state.get("power") or {})
         window_set = set(window)
         off_list = [d for d in targets if d not in window_set]
         # Off first (break), then on (make).
+        off_failed: list[str] = []
         for did in off_list:
             if not self._is_rotating(rid):   # a concurrent stop_rotation won -> bail
                 return
-            self._apply(did, off_values)
-        for did in window:
+            off_failed += self._apply(did, off_values)
+        window_on = list(window)
+        if off_failed:
+            failed_draw = sum(float(power.get(d, 1)) for d in set(off_failed))
+            held_back: list[str] = []
+            held_draw = 0.0
+            while window_on and held_draw < failed_draw:
+                held = window_on.pop()
+                held_back.append(held)
+                held_draw += float(power.get(held, 1))
+            self.notify_fn("warning", "rotation_degraded",
+                           f"Rotation '{rid}': {len(set(off_failed))} zone(s) failed to switch "
+                           f"off ({','.join(sorted(set(off_failed)))}); holding back "
+                           f"{len(held_back)} incoming zone(s) "
+                           f"({','.join(held_back) or 'none'}) to stay under the cap. "
+                           "Retrying at the next swap.")
+        on_failed: list[str] = []
+        for did in window_on:
             if not self._is_rotating(rid):
                 return
-            self._apply(did, on_values)
+            on_failed += self._apply(did, on_values)
+        actually_on = [d for d in window_on if d not in set(on_failed)]
         with self._lock:
             state = self._rotations.get(rid)
             if state is not None:
-                state["current_on"] = set(window)
+                # Record what we actually turned on (not what we intended), so the
+                # status display and a restart's reconcile reflect reality.
+                state["current_on"] = set(actually_on)
         if window or off_list:
-            log.info("Rotation '%s': on=%s off=%s", rid, sorted(window_set), sorted(off_list))
+            log.info("Rotation '%s': on=%s off=%s%s", rid, sorted(actually_on), sorted(off_list),
+                     f" (off FAILED: {sorted(set(off_failed))})" if off_failed else "")
         self._save_rotations()
 
     def _is_rotating(self, rid: str) -> bool:
@@ -794,7 +868,10 @@ class AutomationEngine:
             log.info("Resumed rotation '%s' (every %dm, %d/%d running); reconciling.",
                      rid, interval, len(window), len(st.get("targets", [])))
             try:
-                self._drive_rotation(rid, window)
+                # Same serialization as a scheduled tick: don't interleave the
+                # reconcile with rule actions that may already be running.
+                with self._action_lock:
+                    self._drive_rotation(rid, window)
             except Exception as exc:
                 log.error("Reconciling rotation '%s' on resume failed: %s", rid, exc)
 

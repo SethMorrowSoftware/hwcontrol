@@ -218,6 +218,18 @@ active (so it doesn't re-energize the shed zones and overload the generator), an
 the genuine transition to "off" still stops the rotation and triggers the restore.
 (For this to work across a restart, publish the generator status **retained**.)
 
+**Outage-safe by construction.** While a rotation is active, **daily programs skip
+the zones it manages** — a "6am all zones ON" boundary firing mid-outage can't
+re-energize shed zones and overload the generator (an alert notes the skip; those
+zones return to normal program control after the restore). If a zone **fails to
+switch off** during a swap, the incoming zones are held back by the equivalent
+draw, so a failed write can never push the group over its count/power cap — it's
+retried at the next swap. The broker connection is opened asynchronously with
+background retry, so if this app boots before Mosquitto after a site-wide power
+blink, MQTT comes up on its own instead of staying dead until a restart. Inbound
+MQTT handling runs on a dedicated worker (in arrival order), so a slow burst of
+rate-limited Honeywell writes can't starve the MQTT keepalive mid-outage.
+
 The bridge connects with a persistent session (`clean_session=false`) and
 subscribes/publishes at **QoS 1**, so a brief broker blip during an outage won't
 silently drop the "utility restored" message. It also raises an operator alert the
@@ -562,9 +574,23 @@ This is designed to coexist with the other services on the facility server:
   timezone, and most servers run in **UTC**, so a "22:00 Off" program fires at
   22:00 UTC — 6pm Eastern in summer. Set `SCHEDULE_TZ` to your IANA zone (e.g.
   `America/New_York`, **not** a bare `EST` — the IANA name handles EST/EDT for
-  you) and restart. Confirm the effective zone with `GET /api/status`
-  (`schedule_timezone` / `server_time`) or in the startup log line
-  ("Scheduler started … Timezone=…, local time now=…").
+  you) and restart. An **invalid** `SCHEDULE_TZ` doesn't stop the app: it falls
+  back to server-local time and raises a critical alert until fixed. Confirm the
+  effective zone with `GET /api/status` (`schedule_timezone` / `server_time`) or
+  in the startup log line ("Scheduler started … Timezone=…, local time now=…").
+
+---
+
+## Tests
+
+The safety-critical behaviors (rotation window math and break-before-make under
+failure, trigger edge latching and retry, schedule walkback and the
+rotation-skip guard, MQTT worker dispatch, timezone fallback) have regression
+tests. They use only the standard library test runner:
+
+```bash
+python -m unittest discover -s tests
+```
 
 ---
 

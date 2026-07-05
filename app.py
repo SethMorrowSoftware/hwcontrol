@@ -66,6 +66,7 @@ scheduler: Optional[FacilityScheduler] = None
 engine: Optional[AutomationEngine] = None
 _poller_stop = threading.Event()
 _schedules_asserted = False   # assert program setpoints once, after the first poll
+_deferral_notified = False    # one alert per deferral episode, not one per poll
 
 # Serializes a full poll so /api/refresh + /auth/callback + the poller thread
 # can't stack N concurrent polls all hammering the rate limit.
@@ -185,9 +186,11 @@ def take_over_device(device_id: str) -> None:
         cached = store.get(device_id) or {}
         current_cv = cached.get("changeableValues") or {}
         # Merge only the hold onto the device's existing values so we freeze whatever
-        # it's doing right now (mode + setpoints) under a permanent hold.
+        # it's doing right now (mode + setpoints) under a permanent hold. If the
+        # cache has no changeableValues yet, pass None so set_thermostat fetches
+        # the live object first - a hold-only body would be rejected by Resideo.
         client.set_thermostat(device_id, loc, {"thermostatSetpointStatus": "PermanentHold"},
-                              current_changeable=current_cv)
+                              current_changeable=current_cv or None)
         # Update the cache locally instead of spending an extra GET; the next full
         # poll reconciles reality anyway and the cooldown limits re-tries.
         store.apply_local_override(device_id, {"thermostatSetpointStatus": "PermanentHold"})
@@ -252,6 +255,13 @@ def _clamp_overrides(cached: Optional[dict], overrides: dict) -> dict:
     return out
 
 
+# Every field a control write may carry (dashboard, MQTT commands, automations,
+# schedule periods). Anything else is dropped/rejected before it can be merged
+# into the changeableValues body POSTed to Resideo.
+_SET_FIELDS = frozenset({"mode", "heatSetpoint", "coolSetpoint", "thermostatSetpointStatus",
+                         "nextPeriodTime", "autoChangeoverActive", "fan"})
+
+
 def apply_action(targets: Any, action: dict, refresh: bool = True) -> list[str]:
     """Apply a control action to one device, a list, or 'all'. Used by the
     scheduler, automations and MQTT commands. Returns the list of deviceIDs that
@@ -271,7 +281,14 @@ def apply_action(targets: Any, action: dict, refresh: bool = True) -> list[str]:
         device_ids = list(targets)
 
     fan_mode = action.get("fan")
-    setpoint_overrides = {k: v for k, v in action.items() if k != "fan"}
+    unknown = sorted(k for k in action if k not in _SET_FIELDS)
+    if unknown:
+        # Junk keys (a typo'd MQTT payload, a hand-edited rule) must not ride
+        # into the changeableValues POST body and break the write.
+        log.warning("Dropping unknown control field(s) %s (allowed: %s)",
+                    unknown, sorted(_SET_FIELDS))
+    setpoint_overrides = {k: v for k, v in action.items()
+                          if k != "fan" and k in _SET_FIELDS}
 
     # Make this app the sole source of truth over the thermostats' onboard
     # (Resideo-app) 7-day schedule. A setpoint written with anything other than
@@ -309,6 +326,35 @@ def apply_action(targets: Any, action: dict, refresh: bool = True) -> list[str]:
                                 f"Control failed for {did}: {exc}", did)
                 failed.append(did)
     return failed
+
+
+def apply_schedule_action(targets: Any, action: dict) -> list[str]:
+    """apply_action for schedule periods, minus any zone under an active
+    generator rotation. A period boundary firing mid-outage ("all zones ON at
+    6am") must not re-energize shed zones and overload the generator - the same
+    hazard the startup schedule-assertion deferral guards against. Skipped
+    zones return to normal program control at the next boundary after the
+    rotation stops (the post-outage restore puts them back first)."""
+    active = engine.active_rotation_targets() if engine else set()
+    if active:
+        if targets == "all":
+            ids = store.all_device_ids()
+        elif isinstance(targets, str):
+            ids = [targets]
+        else:
+            ids = list(targets)
+        skipped = sorted(d for d in ids if d in active)
+        ids = [d for d in ids if d not in active]
+        if skipped:
+            log.warning("Schedule period skipped zone(s) under an active rotation: %s", skipped)
+            notify("warning", "schedule_deferred",
+                   f"Schedule period skipped {len(skipped)} zone(s) under an active "
+                   f"generator rotation: {', '.join(skipped)}. They stay under outage "
+                   "control until utility power returns.")
+        if not ids:
+            return []
+        targets = ids
+    return apply_action(targets, action, refresh=False)
 
 
 def handle_mqtt_command(device_id: str, command: dict) -> None:
@@ -411,6 +457,14 @@ def poll_once() -> None:
                 # so a summary-shaped payload can't silently drop real zones.
                 log.warning("Location %s reported %d device(s) but no recognized thermostats.",
                             loc_id, len(inline))
+            if not thermostats and store.device_ids_at(loc_id):
+                # This location previously had zones but reported none this cycle
+                # (a transient empty `devices` array). Treat the poll as incomplete
+                # so reap can't evict the whole location on a blip - mid-outage
+                # that would also drop location_of and break rotation writes.
+                complete = False
+                log.warning("Location %s reported no thermostats but zones are known "
+                            "there; skipping reap this cycle.", loc_id)
             for t in thermostats:
                 did = t.get("deviceID")
                 if did:
@@ -444,7 +498,7 @@ def poll_once() -> None:
 
 
 def _poller_loop() -> None:
-    global _schedules_asserted
+    global _schedules_asserted, _deferral_notified
     # Small initial delay so the server is up before the first poll.
     _poller_stop.wait(2)
     while not _poller_stop.is_set():
@@ -460,13 +514,18 @@ def _poller_loop() -> None:
                 # Restart mid-outage: re-asserting schedules would re-energize the
                 # shed zones all at once and overload the generator. Defer until the
                 # rotation stops (utility restored), then assert on a later poll.
-                log.warning("Active generator rotation(s) at startup; deferring schedule "
-                            "assertion for %d zone(s) to avoid re-energizing shed zones.",
-                            len(active))
-                notify("warning", "schedule_deferred",
-                       "Startup schedule assertion deferred: a generator rotation is active.")
+                # Alert ONCE per episode - one per poll would flood the alert
+                # buffer over a long outage and evict genuinely critical alerts.
+                if not _deferral_notified:
+                    _deferral_notified = True
+                    log.warning("Active generator rotation(s) at startup; deferring schedule "
+                                "assertion for %d zone(s) to avoid re-energizing shed zones.",
+                                len(active))
+                    notify("warning", "schedule_deferred",
+                           "Startup schedule assertion deferred: a generator rotation is active.")
             else:
                 _schedules_asserted = True
+                _deferral_notified = False
                 try:
                     scheduler.apply_all_active_now()
                 except Exception as exc:
@@ -499,6 +558,7 @@ async def lifespan(app: FastAPI):
         snapshot_read_fn=snapshot_read,
         notify_fn=notify,
         on_topics_changed=sync_automation_topics,
+        hourly_write_budget=Config.RL_HOURLY_CAP,
     )
 
     if Config.MQTT_ENABLED:
@@ -521,10 +581,12 @@ async def lifespan(app: FastAPI):
     sync_automation_topics()  # subscribe to whatever loaded rules watch
 
     scheduler = FacilityScheduler(
-        apply_fn=lambda t, a: apply_action(t, a, refresh=False),
+        apply_fn=apply_schedule_action,   # skips zones under an active rotation
         timezone=Config.SCHEDULE_TZ or None,
     )
     scheduler.start()
+    if scheduler.timezone_error:
+        notify("critical", "config", scheduler.timezone_error)
 
     poller = threading.Thread(target=_poller_loop, name="poller", daemon=True)
     poller.start()
@@ -653,6 +715,10 @@ def api_set_device(device_id: str, payload: dict = Body(...)):
     loc = store.location_of(device_id)
     if loc is None:
         raise HTTPException(404, f"Unknown device {device_id} (has it been polled yet?)")
+    unknown = sorted(k for k in payload if k not in _SET_FIELDS)
+    if unknown:
+        raise HTTPException(400, f"Unknown field(s): {', '.join(unknown)}. "
+                                 f"Allowed: {', '.join(sorted(_SET_FIELDS))}")
 
     # Validate mode against what the device actually supports.
     cached = store.get(device_id)
@@ -782,8 +848,10 @@ def api_restore_onboard(device_id: str):
         with _device_lock(device_id):
             cached = store.get(device_id) or {}
             current_cv = cached.get("changeableValues") or {}
+            # None -> set_thermostat fetches the live object when the cache is
+            # empty, so a hold-only body can't be rejected.
             client.set_thermostat(device_id, loc, {"thermostatSetpointStatus": "NoHold"},
-                                  current_changeable=current_cv)
+                                  current_changeable=current_cv or None)
             store.apply_local_override(device_id, {"thermostatSetpointStatus": "NoHold"})
             _refresh_one(device_id, loc)
     except HoneywellError as exc:
