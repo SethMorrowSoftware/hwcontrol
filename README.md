@@ -144,16 +144,20 @@ If you change one, change the other to match.
 Served at `/`. It's a single self-contained page (no external fonts or CDNs, works
 on an air-gapped LAN) that polls the local API every ~10s. Four tabs:
 
-- **Zones** — a card per thermostat: current temp/humidity, online dot, mode chips,
-  heat/cool steppers, hold selector, and Apply. Changes you're typing are preserved
-  across background refreshes until you Apply or discard.
+- **Zones** — a search filter and live fleet summary (online/offline and mode
+  counts) above a card per thermostat: current temp/humidity, online dot, what the
+  zone is set to do right now, mode chips, heat/cool steppers (press-and-hold to
+  repeat), fan mode (when the device reports fan capability), hold selector, and
+  Apply. Changes you're typing are preserved across background refreshes until you
+  Apply or discard.
 - **Automations** — the generator load-shed setup, a live status strip (active
   rotations, saved snapshots, MQTT connection), the list of rules (editable), and a
   custom multi-condition (AND/OR) rule builder. Details below.
 - **Schedules** — daily programs: pick a target and days, then add timed periods
   (ON / OFF / temperature changes) with one-tap presets. Programs are editable.
 - **Alerts** — a feed of offline/again events, out-of-range temperatures, and a log
-  of every automation action taken.
+  of every automation action taken, filterable by severity; the tab badge turns
+  red/amber while critical/warning alerts are live.
 
 ### Optional access gate
 
