@@ -232,13 +232,23 @@
   .readout{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin:4px 0 15px}
   .temp{font-family:var(--mono);font-size:46px;font-weight:650;line-height:.9;letter-spacing:-.02em}
   .temp .u{font-size:18px;color:var(--muted);font-weight:400;margin-left:1px}
-  /* what the zone is set to do right now (its live target, not pending edits) */
-  .zstate{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;
+  /* what the zone is doing right now: live "Heating to 66°" (pulsing) when the
+     device reports equipment state, "Idle · Heat 66°" while holding, or the
+     commanded target on models that don't report it */
+  .zstate{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;font-weight:600;
     margin-top:9px;padding:3px 10px;border-radius:var(--r-pill);white-space:nowrap;
-    border:1px solid var(--border);background:var(--surface-2);color:var(--muted)}
+    border:1px solid var(--border);background:var(--surface-2);color:var(--muted);cursor:default}
   .zstate.heat{background:var(--heat-soft);border-color:var(--heat-line);color:var(--heat)}
   .zstate.cool{background:var(--cool-soft);border-color:var(--cool-line);color:var(--cool)}
   .zstate.auto{background:var(--auto-soft);border-color:var(--auto-line);color:var(--auto)}
+  /* small pulsing dot marks LIVE equipment activity (heating/cooling now) */
+  .zdot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none;position:relative}
+  .zdot::after{content:"";position:absolute;inset:-3px;border-radius:50%;
+    background:currentColor;opacity:.3;animation:pulse 2.2s ease-out infinite}
+  .zs.live{font-weight:600}
+  .zs.live.heat{background:var(--heat-soft);border-color:var(--heat-line);color:var(--heat)}
+  .zs.live.cool{background:var(--cool-soft);border-color:var(--cool-line);color:var(--cool)}
+  .zs.live b{color:inherit}
   .meta{font-size:12px;color:var(--muted);text-align:right;line-height:1.7}
   .meta .m{display:inline-flex;align-items:center;gap:5px;justify-content:flex-end}
   .meta svg{width:13px;height:13px;opacity:.75}
@@ -1007,15 +1017,27 @@ function skeletonGrid(){
   return Array.from({length:6}).map(()=>`<div class="skel" aria-hidden="true"></div>`).join("");
 }
 function fmtT(v){ return v!=null?Math.round(v)+"°":"–°"; }
-/* The zone's live target — what the thermostat is currently set to do. Factual
-   (mode + setpoints as reported), not an inference about equipment state. */
+/* True while the device reports its equipment actively heating/cooling. */
+function equipRunning(d,kind){ return ((d.equipmentStatus||"").toLowerCase()).includes(kind); }
+/* The zone's activity chip. When the device reports live equipment state
+   (operationStatus), the chip is factual about RIGHT NOW: "Heating to 66°"
+   with a pulse while equipment runs, "Idle · Heat 66°" while it holds.
+   Devices that don't report it fall back to the commanded target. */
 function zoneActivity(d){
-  if(!d.online) return {t:"Offline",cls:""};
+  if(!d.online) return {t:"Offline",cls:"",live:false,
+    tip:"This zone is offline — its last known state is shown."};
+  if(equipRunning(d,"heat")) return {t:"Heating to "+fmtT(d.heatSetpoint),cls:"heat",live:true,
+    tip:"Equipment is actively heating right now (live from the thermostat)."};
+  if(equipRunning(d,"cool")) return {t:"Cooling to "+fmtT(d.coolSetpoint),cls:"cool",live:true,
+    tip:"Equipment is actively cooling right now (live from the thermostat)."};
   const m=(d.mode||"").toLowerCase();
-  if(m==="heat") return {t:"Heat to "+fmtT(d.heatSetpoint),cls:"heat"};
-  if(m==="cool") return {t:"Cool to "+fmtT(d.coolSetpoint),cls:"cool"};
-  if(m==="auto") return {t:"Auto "+fmtT(d.heatSetpoint)+"–"+fmtT(d.coolSetpoint),cls:"auto"};
-  if(m==="off") return {t:"Off",cls:""};
+  if(m==="off") return {t:"Off",cls:"",live:false,tip:"This zone is switched off."};
+  // Equipment reported but not running: the zone is holding at temperature.
+  const idle=!!d.equipmentStatus;
+  const tip=idle?"Equipment is idle — the zone is at temperature and will run again when it drifts from the target.":"The zone's current target (this model doesn't report live equipment state).";
+  if(m==="heat") return {t:(idle?"Idle · Heat ":"Heat to ")+fmtT(d.heatSetpoint),cls:idle?"":"heat",live:false,tip:tip};
+  if(m==="cool") return {t:(idle?"Idle · Cool ":"Cool to ")+fmtT(d.coolSetpoint),cls:idle?"":"cool",live:false,tip:tip};
+  if(m==="auto") return {t:(idle?"Idle · Auto ":"Auto ")+fmtT(d.heatSetpoint)+"–"+fmtT(d.coolSetpoint),cls:idle?"":"auto",live:false,tip:tip};
   return null;
 }
 /* Fleet summary chips above the grid: totals, reachability, and mode mix. */
@@ -1027,12 +1049,18 @@ function renderZoneSummary(){
   const ds=state.devices;
   const online=ds.filter(d=>d.online).length, offline=ds.length-online;
   const bits=[`<span class="zs"><b>${ds.length}</b>&nbsp;zone${ds.length===1?"":"s"}</span>`,
-    `<span class="zs"><span class="dot on"></span><b>${online}</b>&nbsp;online</span>`];
-  if(offline) bits.push(`<span class="zs"><span class="dot off"></span><b>${offline}</b>&nbsp;offline</span>`);
+    `<span class="zs" title="Zones reachable by Honeywell right now"><span class="dot on"></span><b>${online}</b>&nbsp;online</span>`];
+  if(offline) bits.push(`<span class="zs" title="Zones Honeywell can't reach"><span class="dot off"></span><b>${offline}</b>&nbsp;offline</span>`);
+  // Live equipment activity (what's actually running) vs the mode mix below
+  // (what zones are set to) — the live chips are tinted and pulse.
+  const heatingNow=ds.filter(d=>d.online&&equipRunning(d,"heat")).length;
+  const coolingNow=ds.filter(d=>d.online&&equipRunning(d,"cool")).length;
+  if(heatingNow) bits.push(`<span class="zs live heat" title="Equipment actively heating right now (live)"><span class="zdot"></span><b>${heatingNow}</b>&nbsp;heating now</span>`);
+  if(coolingNow) bits.push(`<span class="zs live cool" title="Equipment actively cooling right now (live)"><span class="zdot"></span><b>${coolingNow}</b>&nbsp;cooling now</span>`);
   for(const [k,v,label] of [["heat","--heat","Heat"],["cool","--cool","Cool"],
       ["auto","--auto","Auto"],["off","--faint","Off"]]){
     const c=ds.filter(d=>(d.mode||"").toLowerCase()===k).length;
-    if(c) bits.push(`<span class="zs"><span class="sw" style="background:var(${v})"></span><b>${c}</b>&nbsp;${label}</span>`);
+    if(c) bits.push(`<span class="zs" title="${c} zone${c===1?'':'s'} set to ${label}"><span class="sw" style="background:var(${v})"></span><b>${c}</b>&nbsp;${label}</span>`);
   }
   if(state.devicesTs) bits.push(`<span class="zs plain" data-ago="${state.devicesTs}" data-prefix="updated ">updated ${esc(ago(state.devicesTs))}</span>`);
   sum.innerHTML=bits.join("");
@@ -1096,7 +1124,8 @@ function renderZones(){
     const meta=[];
     if(d.indoorHumidity!=null) meta.push(`<span class="m">${IC.droplet}${d.indoorHumidity}%</span>`);
     if(d.outdoorTemperature!=null) meta.push(`<span class="m">${IC.thermo}${Math.round(d.outdoorTemperature)}° out</span>`);
-    if(d.fanRunning===true) meta.push(`<span class="m" title="The fan is currently running">${IC.wind}fan on</span>`);
+    if(d.fanRunning===true||d.fanRequest===true||d.circulationFanRequest===true)
+      meta.push(`<span class="m" title="The fan is currently running">${IC.wind}fan on</span>`);
     const src = controlSource(d);
     if(src) meta.push(`<span class="m src ${src.cls}" title="${esc(src.tip)}">${esc(src.t)}</span>`);
     const act=zoneActivity(d);
@@ -1113,7 +1142,7 @@ function renderZones(){
       <div class="readout">
         <div>
           <div class="temp">${temp}<span class="u">°${esc(unit)}</span></div>
-          ${act?`<div class="zstate ${act.cls}">${esc(act.t)}</div>`:''}
+          ${act?`<div class="zstate ${act.cls}${act.live?' live':''}" title="${esc(act.tip||'')}">${act.live?'<span class="zdot"></span>':''}${esc(act.t)}</div>`:''}
         </div>
         <div class="meta">${meta.join("<br>")||"&nbsp;"}</div>
       </div>
@@ -1181,6 +1210,7 @@ async function loadDevices(){
     state.devicesTs=Math.floor(Date.now()/1000);   // last-good update time for staleness
     setPollHealth(true);
     renderZones(); populateTargets();
+    renderAutoStripe();   // zone names + live equipment counts may now resolve
     const sig=state.devices.map(d=>d.deviceID).sort().join("|");
     if(sig!==state.pickerSig){ state.pickerSig=sig; populatePickers(); loadOnboard(); }
   }catch(e){
@@ -1556,22 +1586,37 @@ function valShort(v){ v=v||{}; const b=[]; if(v.mode)b.push(v.mode);
   if(v.heatSetpoint!=null)b.push("H"+v.heatSetpoint+"°"); if(v.coolSetpoint!=null)b.push("C"+v.coolSetpoint+"°");
   return b.join(" ")||"unchanged"; }
 
+/* The status stripe (MQTT link, live rotations, saved snapshots) renders from
+   cached state so a device refresh can re-render it with resolved zone names
+   and live equipment counts, without refetching /api/automations. */
+function renderAutoStripe(){
+  const strip=document.getElementById("autoStripe");
+  if(!strip||!state.autoMeta) return;
+  const bits=[];
+  if(!state.autoMeta.mqtt_enabled) bits.push(`<div class="stat warnbox">MQTT disabled — triggers won't fire. Use <b>Run now</b> to test, and set <b>MQTT_ENABLED=true</b> to go live.</div>`);
+  else bits.push(`<div class="stat"><span class="dot ${state.autoMeta.mqtt_connected?'on':'off'}"></span>MQTT ${state.autoMeta.mqtt_connected?'connected':'not connected'}</div>`);
+  (state.autoStatus.rotations||[]).forEach(rot=>{
+    const names=rot.running.map(deviceName).map(esc).join(", ")||"none";
+    // Live cross-check: of the zones in the "on" window, how many report
+    // equipment actually running right now (the real generator load).
+    const actv=rot.running.filter(id=>{
+      const d=state.devices.find(x=>x.deviceID===id);
+      return d&&(equipRunning(d,"heat")||equipRunning(d,"cool"));
+    }).length;
+    const actvBit=state.devices.length?`, <b>${actv}</b> actively running now`:"";
+    bits.push(`<div class="stat live" title="Zones in the current 'on' window; 'actively running' is the live equipment state from the thermostats">↻ Rotating <b>${esc(rot.rotation_id)}</b>: ${rot.running.length}/${rot.total} zones on (${names}), swapping every ${esc(rot.interval_minutes)} min${actvBit}</div>`);
+  });
+  Object.entries(state.autoStatus.snapshots||{}).forEach(([n,ids])=>
+    bits.push(`<div class="stat">saved “<b>${esc(n)}</b>” · ${ids.length} zone(s)</div>`));
+  strip.innerHTML=bits.join("");
+}
 async function loadAutomations(){
   try{
     const r=await api("/api/automations");
     const rules=r.automations||[]; state.autoStatus=r.status||{}; state.autos=rules;
+    state.autoMeta={mqtt_enabled:r.mqtt_enabled,mqtt_connected:r.mqtt_connected};
     document.getElementById("autoCount").textContent=rules.length||"0";
-
-    const strip=document.getElementById("autoStripe"); const bits=[];
-    if(!r.mqtt_enabled) bits.push(`<div class="stat warnbox">MQTT disabled — triggers won't fire. Use <b>Run now</b> to test, and set <b>MQTT_ENABLED=true</b> to go live.</div>`);
-    else bits.push(`<div class="stat"><span class="dot ${r.mqtt_connected?'on':'off'}"></span>MQTT ${r.mqtt_connected?'connected':'not connected'}</div>`);
-    (state.autoStatus.rotations||[]).forEach(rot=>{
-      const names=rot.running.map(deviceName).map(esc).join(", ")||"none";
-      bits.push(`<div class="stat live">↻ Rotating <b>${esc(rot.rotation_id)}</b>: ${rot.running.length}/${rot.total} zones running (${names}), swapping every ${esc(rot.interval_minutes)} min</div>`);
-    });
-    Object.entries(state.autoStatus.snapshots||{}).forEach(([n,ids])=>
-      bits.push(`<div class="stat">saved “<b>${esc(n)}</b>” · ${ids.length} zone(s)</div>`));
-    strip.innerHTML=bits.join("");
+    renderAutoStripe();
 
     const list=document.getElementById("autoList");
     if(!rules.length){ list.innerHTML=`<div class="empty"><div class="e-ic">${IC.bolt}</div>
