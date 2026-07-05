@@ -285,6 +285,40 @@
   .picker input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent);cursor:pointer;flex:none}
   .picker.empty{color:var(--faint);font-size:12.5px;padding:16px;text-align:center}
 
+  /* ============================ outage-plan wizard ============================ */
+  /* numbered step headers inside the generator card */
+  .gstep{margin:24px 0 6px;padding-top:16px;border-top:1px solid var(--border)}
+  .gstep:first-of-type{border-top:none;padding-top:4px;margin-top:6px}
+  .gstep .n{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--heat);font-weight:700}
+  .gstep .t{font-size:14.5px;font-weight:650;margin-top:3px}
+  /* generous helper text under a label/field */
+  .hlp{font-size:12px;color:var(--muted);line-height:1.5;max-width:74ch;margin:4px 0 10px}
+  .hlp:last-child{margin-bottom:0}
+  .hlp code,.gnote code,.gprev code,.glisten code{font-family:var(--mono);font-size:.9em;
+    background:var(--surface-2);border:1px solid var(--border);border-radius:5px;padding:1px 5px;color:var(--text)}
+  .glisten{font-size:12.5px;color:var(--muted);margin:4px 0 10px;line-height:1.6}
+  /* highlighted advisory note (retained-message / installer tip) */
+  .gnote{font-size:12.5px;color:var(--muted);background:var(--warn-soft);border:1px solid var(--warn);
+    border-radius:var(--r-sm);padding:10px 12px;margin:12px 0 4px;line-height:1.6}
+  .gnote b{color:var(--text)}
+  .gnote code{background:var(--surface);border-color:var(--border-strong)}
+  /* live plain-English preview box */
+  .gprev{background:var(--surface-2);border:1px solid var(--border);border-left:3px solid var(--heat);
+    border-radius:var(--r-sm);padding:13px 15px;margin:8px 0 14px;font-size:13px;line-height:1.7}
+  .gprev .pline{display:block;margin:2px 0}
+  .gprev .pk{color:var(--heat);font-weight:800;margin-right:6px}
+  .gprev b{color:var(--text);font-weight:650}
+  .gprev .muted{color:var(--faint)}
+  /* inline validation hint beside the create button */
+  .ghint{font-size:12.5px;color:var(--crit);margin-top:9px;line-height:1.5;max-width:74ch}
+  .ghint:empty{display:none}
+  /* little "?" help chip next to a jargon label */
+  .help{display:inline-grid;place-items:center;width:15px;height:15px;border-radius:50%;
+    border:1px solid var(--border-strong);color:var(--muted);font-size:10px;font-weight:700;line-height:1;
+    cursor:help;margin-left:5px;vertical-align:middle;font-family:var(--sans)}
+  /* one-line "this is the advanced path" note above the custom builder */
+  .secondary-note{font-size:12.5px;color:var(--muted);margin:6px 0 2px;max-width:72ch;line-height:1.5}
+
   /* ============================ rules / automations lists ============================ */
   .sectitle{font-size:11.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);
     margin:26px 0 12px;font-weight:600}
@@ -468,44 +502,88 @@
   <section class="view" id="view-automations" role="tabpanel" aria-labelledby="tab-automations" tabindex="0" hidden>
     <div class="stripe" id="autoStripe"></div>
 
-    <div class="card-lg accent">
-      <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Generator load-shed</h3>
-      <div class="desc">When your transfer switch reports it's on generator power, turn selected zones
-        off and duty-cycle the rest so they share the generator instead of all running at once.
-        When utility power returns, every zone is restored to how it was. This creates two paired rules.</div>
+    <div class="card-lg accent" id="g-card">
+      <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Power-outage plan (generator)</h3>
+      <div class="desc">During an outage your generator can't run every unit at once without overloading.
+        Set this up once and the app handles it automatically: the zones you choose switch off, the
+        important ones take turns so they stay conditioned, and when normal power returns every zone
+        goes back exactly as it was.</div>
+
+      <!-- Step 1 — pick the zones -->
+      <div class="gstep"><div class="n">Step 1</div><div class="t">Which zones matter most?</div></div>
+      <div class="fld full">
+        <label>Keep these running (they take turns)</label>
+        <div class="hlp">The critical zones that must stay heated/cooled — e.g. a server room, or pipes
+          that could freeze. The app keeps some running and rotates so none stays off for long.</div>
+        <div class="picker" id="g-rotate"></div>
+      </div>
+      <div class="fld full">
+        <label>These can switch off</label>
+        <div class="hlp">Non-critical zones that can go without during the outage — e.g. a lobby or storage room.</div>
+        <div class="picker" id="g-shed"></div>
+      </div>
+
+      <!-- Step 2 — how the "keep running" zones share the generator -->
+      <div class="gstep"><div class="n">Step 2</div><div class="t">How should the 'keep running' zones share the generator?</div></div>
       <div class="form-grid">
-        <div class="fld"><label for="g-topic">Generator status topic</label>
-          <input id="g-topic" class="mono" value="facility/generator/status"></div>
-        <div class="fld"><label for="g-field">JSON field (optional, e.g. power.source)</label>
-          <input id="g-field" class="mono" placeholder="leave blank for a plain payload"></div>
-        <div class="fld"><label for="g-on">Payload when ON generator</label>
-          <input id="g-on" class="mono" value="on"></div>
-        <div class="fld"><label for="g-off">Payload when back on utility</label>
-          <input id="g-off" class="mono" value="off"></div>
-        <div class="fld full"><label>Turn these zones OFF (non-critical)</label>
-          <div class="picker" id="g-shed"></div></div>
-        <div class="fld full"><label>Rotate these zones (critical — keep some running)</label>
-          <div class="picker" id="g-rotate"></div></div>
-        <div class="fld"><label for="g-runmode">How many run at once</label>
+        <div class="fld"><label for="g-runmode">Sharing method</label>
           <div class="field sel"><select id="g-runmode">
+            <option value="half">Half on / half off (recommended)</option>
             <option value="count">A set number of units</option>
-            <option value="half">Half on / half off</option>
-          </select></div></div>
-        <div class="fld" id="g-run-wrap"><label for="g-run">Number of units running</label>
-          <input id="g-run" type="number" min="1" value="2"></div>
-        <div class="fld"><label for="g-int">Rotate interval (minutes, min 5)</label>
-          <input id="g-int" type="number" min="5" value="15"></div>
-        <div class="fld"><label for="g-heat">Heat setpoint while running</label>
+          </select></div>
+          <div class="hlp">Half is the safe default — half your critical zones run while the other half rest, then they swap.</div>
+        </div>
+        <div class="fld" id="g-run-wrap"><label for="g-run">How many units run at once</label>
+          <input id="g-run" type="number" min="1" value="2">
+          <div class="hlp">The others switch off and wait for their turn.</div></div>
+        <div class="fld"><label for="g-int">Swap every … minutes</label>
+          <input id="g-int" type="number" min="5" value="15">
+          <div class="hlp">How often they take turns. 15 minutes is gentle on the equipment (never below 5).</div></div>
+        <div class="fld"><label for="g-heat">Hold Heat …° while a zone is running</label>
           <input id="g-heat" type="number" value="66"></div>
-        <div class="fld"><label for="g-cool">Cool setpoint while running</label>
-          <input id="g-cool" type="number" value="80"></div>
-        <div class="fld full"><button class="btn warm" id="g-create">Create generator rules</button></div>
+        <div class="fld"><label for="g-cool">Hold Cool …° while a zone is running</label>
+          <input id="g-cool" type="number" value="80">
+          <div class="hlp">The temperature to maintain during a zone's 'on' turn.</div></div>
+      </div>
+
+      <!-- Step 3 — how the app detects the generator -->
+      <div class="gstep"><div class="n">Step 3</div><div class="t">How does the app know the generator is on?</div></div>
+      <div class="hlp">The app watches for a message from your transfer switch or generator monitor on your MQTT broker.</div>
+      <div class="glisten" id="g-listen">Currently listening on <code>facility/generator/status</code> — <code>on</code> = generator, <code>off</code> = utility.</div>
+      <details class="adv">
+        <summary>Change the message details (advanced)</summary>
+        <div class="form-grid" style="margin-top:6px">
+          <div class="fld"><label for="g-topic">Topic to listen on</label>
+            <input id="g-topic" class="mono" value="facility/generator/status">
+            <div class="hlp">Example: <code>facility/generator/status</code></div></div>
+          <div class="fld"><label for="g-field">JSON field (optional)</label>
+            <input id="g-field" class="mono" placeholder="leave blank for a plain payload">
+            <div class="hlp">Example: <code>power.source</code> — only if the message is JSON.</div></div>
+          <div class="fld"><label for="g-on">Message when on generator</label>
+            <input id="g-on" class="mono" value="on">
+            <div class="hlp">Example: <code>on</code></div></div>
+          <div class="fld"><label for="g-off">Message when back on utility</label>
+            <input id="g-off" class="mono" value="off">
+            <div class="hlp">Example: <code>off</code></div></div>
+        </div>
+        <div class="gnote">Publish this message <b>retained</b> so the app knows the current state after a restart.<br>
+          Test from a terminal: <code>mosquitto_pub -t facility/generator/status -m on -r</code></div>
+      </details>
+      <div class="hlp">No generator signal yet? You can still create this and use <b>Run now</b> on the rule to test it safely.</div>
+
+      <!-- Live plain-English preview -->
+      <div class="gprev" id="g-preview" aria-live="polite"></div>
+      <div class="fld full" style="margin-bottom:0">
+        <button class="btn warm" id="g-create">Create outage plan</button>
+        <div class="ghint" id="g-hint"></div>
       </div>
     </div>
 
     <div class="sectitle">Active automations</div>
     <div id="autoList"></div>
 
+    <div class="secondary-note">Most setups only need the outage plan above. This is for advanced custom
+      triggers (react to any MQTT message).</div>
     <details class="adv">
       <summary>Build a custom rule — react to any MQTT message</summary>
       <div class="card-lg">
@@ -1169,7 +1247,70 @@ function readPicker(id){
   return [...document.querySelectorAll(`#${id} .opt input:checked`)].map(cb=>cb.value);
 }
 function populatePickers(){ makePicker("g-shed"); makePicker("g-rotate");
-  if(document.getElementById("a-type")) renderActionFields(); }
+  if(document.getElementById("a-type")) renderActionFields();
+  updateGeneratorPreview(); }
+
+/* ---- outage-plan live preview ---- */
+function gVal(id){ const el=document.getElementById(id); return el?String(el.value):""; }
+/* A picker selection ("all" | [ids]) rendered as escaped, comma-joined zone names. */
+function zoneNames(sel){
+  if(sel==="all") return "every zone";
+  if(!Array.isArray(sel)||!sel.length) return "";
+  return sel.map(deviceName).map(esc).join(", ");
+}
+/* Count of zones a selection resolves to (for the "half needs ≥2" check). */
+function zoneCount(sel){
+  if(sel==="all") return state.devices.length;
+  return Array.isArray(sel) ? sel.length : 0;
+}
+/* Zones present in BOTH selections — returns "all" or an array of deviceIDs. */
+function zoneOverlap(a,b){
+  if(a==="all"&&b==="all") return "all";
+  const expand=x=> x==="all" ? state.devices.map(d=>d.deviceID) : (Array.isArray(x)?x:[]);
+  const setB=new Set(expand(b));
+  return expand(a).filter(id=>setB.has(id));
+}
+/* Rebuild the plain-English preview (and the "currently listening" line) from the
+   current field/picker state. Everything interpolated is escaped. */
+function updateGeneratorPreview(){
+  const prev=document.getElementById("g-preview"); if(!prev) return;
+  const rotate=readPicker("g-rotate"), shed=readPicker("g-shed");
+  const topic=esc(gVal("g-topic").trim()||"facility/generator/status");
+  const onVal=esc(gVal("g-on").trim()||"on");
+  const offVal=esc(gVal("g-off").trim()||"off");
+  const field=gVal("g-field").trim();
+  const intv=esc(gVal("g-int").trim()||"15");
+  const heat=esc(gVal("g-heat").trim()||"66");
+  const cool=esc(gVal("g-cool").trim()||"80");
+  const runMode=gVal("g-runmode");
+  const run=esc(gVal("g-run").trim()||"2");
+
+  const listen=document.getElementById("g-listen");
+  if(listen){
+    const fieldBit = field ? ` (JSON field <code>${esc(field)}</code>)` : "";
+    listen.innerHTML=`Currently listening on <code>${topic}</code>${fieldBit} — `+
+      `<code>${onVal}</code> = generator, <code>${offVal}</code> = utility.`;
+  }
+
+  const hasRot=rotate==="all"||(Array.isArray(rotate)&&rotate.length);
+  const hasShed=shed==="all"||(Array.isArray(shed)&&shed.length);
+  if(!hasRot&&!hasShed){
+    prev.innerHTML=`<span class="pline"><span class="pk">▸</span><span class="muted">(pick zones above)</span></span>`;
+    return;
+  }
+  const share = runMode==="half" ? "half-on/half-off" : `${run} at a time`;
+  const onParts=[];
+  if(hasShed) onParts.push(`switch <b>OFF</b> ${zoneNames(shed)}`);
+  if(hasRot) onParts.push(`keep ${zoneNames(rotate)} running <b>${share}</b>, swapping every `+
+    `<b>${intv} min</b> while holding <b>Heat ${heat}°</b> / <b>Cool ${cool}°</b>`);
+  const onLine=`When the generator turns ON (<code>${topic}</code> = <code>${onVal}</code>): ${onParts.join("; ")}.`;
+  const offLine=`When utility power returns (= <code>${offVal}</code>): put every zone back exactly how it was.`;
+  prev.innerHTML=
+    `<span class="pline"><span class="pk">▸</span>${onLine}</span>`+
+    `<span class="pline"><span class="pk">▸</span>${offLine}</span>`;
+}
+/* Show a friendly inline hint under the create button (paired with a toast). */
+function gHint(msg){ const h=document.getElementById("g-hint"); if(h) h.textContent=msg||""; }
 
 function tgtName(t){ return t==="all" ? "all zones"
   : Array.isArray(t) ? (t.length?t.map(deviceName).join(", "):"none") : deviceName(t); }
@@ -1213,7 +1354,7 @@ async function loadAutomations(){
     else bits.push(`<div class="stat"><span class="dot ${r.mqtt_connected?'on':'off'}"></span>MQTT ${r.mqtt_connected?'connected':'not connected'}</div>`);
     (state.autoStatus.rotations||[]).forEach(rot=>{
       const names=rot.running.map(deviceName).map(esc).join(", ")||"none";
-      bits.push(`<div class="stat live">↻ <b>${esc(rot.rotation_id)}</b>: ${rot.running.length}/${rot.total} running (${names}) · every ${esc(rot.interval_minutes)}m</div>`);
+      bits.push(`<div class="stat live">↻ Rotating <b>${esc(rot.rotation_id)}</b>: ${rot.running.length}/${rot.total} zones running (${names}), swapping every ${esc(rot.interval_minutes)} min</div>`);
     });
     Object.entries(state.autoStatus.snapshots||{}).forEach(([n,ids])=>
       bits.push(`<div class="stat">saved “<b>${esc(n)}</b>” · ${ids.length} zone(s)</div>`));
@@ -1278,15 +1419,26 @@ async function createGeneratorRules(btn){
   const cool=Number(document.getElementById("g-cool").value);
   const hasShed=shed==="all"||(Array.isArray(shed)&&shed.length);
   const hasRot=rotate==="all"||(Array.isArray(rotate)&&rotate.length);
-  if(!topic){ toast("Enter the generator topic",true); return; }
-  if(!hasShed&&!hasRot){ toast("Pick at least one zone to shed or rotate",true); return; }
+  // Friendly, mistake-proof validation: a clear toast AND an inline hint by the button.
+  const fail=m=>{ toast(m,true); gHint(m); };
+  gHint("");
+  if(!hasShed&&!hasRot){ fail("Pick at least one zone above — the plan needs zones to manage."); return; }
+  // A zone can't be in both lists (switch off AND keep running) at the same time.
+  const overlap=zoneOverlap(shed,rotate);
+  if(overlap==="all"||(Array.isArray(overlap)&&overlap.length)){
+    const names = overlap==="all" ? "every zone" : overlap.map(deviceName).join(", ");
+    fail("These zones are in both lists — a zone can't switch off and keep running at once: "+names+"."); return;
+  }
+  if(!topic){ fail("Add the generator topic under “Change the message details (advanced)”."); return; }
   // Validate the rotate numbers BEFORE posting: a blank/0 "how many run at once"
   // (Number("")===0) would shed every critical zone at once — frozen-pipe risk.
   if(hasRot){
-    if(runMode==="count" && (!Number.isFinite(run)||run<1)){ toast("“Number of units running” must be at least 1",true); return; }
-    if(!Number.isFinite(interval)||interval<5){ toast("Rotate interval must be at least 5 minutes",true); return; }
-    if(!Number.isFinite(heat)||heat<40||heat>95){ toast("Heat setpoint must be between 40 and 95°",true); return; }
-    if(!Number.isFinite(cool)||cool<40||cool>95){ toast("Cool setpoint must be between 40 and 95°",true); return; }
+    if(runMode==="half" && zoneCount(rotate)<2){
+      fail("Half on / half off needs at least 2 'keep running' zones so they can take turns. Add another zone, or choose 'A set number of units'."); return; }
+    if(runMode==="count" && (!Number.isFinite(run)||run<1)){ fail("“How many units run at once” must be at least 1."); return; }
+    if(!Number.isFinite(interval)||interval<5){ fail("“Swap every … minutes” must be at least 5 minutes."); return; }
+    if(!Number.isFinite(heat)||heat<40||heat>95){ fail("“Hold Heat” must be between 40 and 95°."); return; }
+    if(!Number.isFinite(cool)||cool<40||cool>95){ fail("“Hold Cool” must be between 40 and 95°."); return; }
   }
 
   let snapTargets="all";
@@ -1312,7 +1464,7 @@ async function createGeneratorRules(btn){
       await postRule({name:"Generator: restore on utility",enabled:true,
         trigger:{topic,match:mkMatch(offVal),retrigger:"on_change"},actions:offActions});
     });
-    toast("Generator rules created"); loadAutomations();
+    gHint(""); toast("Outage plan created — two rules added below"); loadAutomations();
   }catch(e){ toast("Couldn't create: "+e.message,true); }
 }
 
@@ -1408,11 +1560,11 @@ function renderConds(){
     .map(([v,l])=>`<option value="${v}" ${s===v?'selected':''}>${l}</option>`).join("");
   c.innerHTML=draftConds.map((cd,i)=>{ const isAny=cd.type==="any", isBet=cd.type==="between";
     return `<div class="brow cond">
-      <div class="f grow"><span class="mini">Topic</span><input class="mono" value="${esc(cd.topic||'')}" placeholder="facility/power/load" onchange="updCond(${i},'topic',this.value)"></div>
+      <div class="f grow"><span class="mini" title="The MQTT topic (channel) to watch on your broker, e.g. facility/power/load">Topic</span><input class="mono" value="${esc(cd.topic||'')}" placeholder="facility/power/load" onchange="updCond(${i},'topic',this.value)"></div>
       <div class="f"><span class="mini">Match</span><div class="field sel"><select onchange="updCond(${i},'type',this.value)">${typeOpts(cd.type)}</select></div></div>
-      ${isAny?'':`<div class="f"><span class="mini">${isBet?'Min':'Value'}</span><input class="mono" value="${esc(cd.value??'')}" placeholder="on / 85" onchange="updCond(${i},'value',this.value)"></div>`}
+      ${isAny?'':`<div class="f"><span class="mini" title="The payload (message value) to compare against, e.g. on or 85">${isBet?'Min':'Value'}</span><input class="mono" value="${esc(cd.value??'')}" placeholder="on / 85" onchange="updCond(${i},'value',this.value)"></div>`}
       ${isBet?`<div class="f"><span class="mini">Max</span><input class="mono" value="${esc(cd.value2??'')}" onchange="updCond(${i},'value2',this.value)"></div>`:''}
-      <div class="f"><span class="mini">JSON field</span><input class="mono" value="${esc(cd.field||'')}" placeholder="optional" onchange="updCond(${i},'field',this.value)"></div>
+      <div class="f"><span class="mini" title="If the message is JSON, the field to read, e.g. power.source. Leave blank for a plain payload.">JSON field</span><input class="mono" value="${esc(cd.field||'')}" placeholder="optional" onchange="updCond(${i},'field',this.value)"></div>
       <div class="f" style="flex:0 0 auto"><span class="mini">&nbsp;</span><label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);height:38px"><input type="checkbox" ${cd.ignore_case?'checked':''} onchange="updCond(${i},'ignore_case',this.checked)"> ignore case</label></div>
       <button class="btn danger rm" aria-label="Remove condition" onclick="rmCond(${i})">✕</button>
     </div>`;
@@ -1497,6 +1649,15 @@ function bindRunModeToggle(sel,wrap){
 bindRunModeToggle("g-runmode","g-run-wrap");
 bindRunModeToggle("a-runmode","a-run-wrap");
 
+// Keep the outage-plan preview live. Delegated on the card so it survives picker
+// rebuilds (makePicker replaces the pickers' innerHTML on every device refresh).
+(function(){
+  const card=document.getElementById("g-card");
+  if(!card) return;
+  card.addEventListener("input", updateGeneratorPreview);
+  card.addEventListener("change", updateGeneratorPreview);
+})();
+
 document.getElementById("themeBtn").onclick=toggleTheme;
 document.getElementById("refreshBtn").onclick=function(){
   const btn=this;
@@ -1539,6 +1700,7 @@ renderZones();            // shows skeleton until first load
 renderActionFields();     // action-type dynamic fields
 resetProgramForm();       // day picker + empty periods
 resetAutoForm();          // one blank condition + empty actions
+updateGeneratorPreview(); // seed the outage-plan preview + "listening" line
 tick(); setInterval(tick,1000);
 refreshStatus(); loadDevices(); loadSchedules(); loadAlerts(); loadAutomations();
 setInterval(pollCycle, 10000);
