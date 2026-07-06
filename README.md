@@ -572,11 +572,16 @@ This is designed to coexist with the other services on the facility server:
   registered URI aren't byte-identical. See the setup section above.
 - **401 / "not authorized"** — tokens expired and couldn't refresh, or `tokens.json`
   isn't writable. Re-run `python authorize.py` and confirm the file's permissions.
-- **429 / rate limit** — you're polling too many devices too often. Raise
-  `POLL_INTERVAL_SECONDS`, reduce rotation frequency, and/or request a higher limit
-  from Resideo. When a poll is throttled the dashboard says so in place of the zone
-  grid; zones return on their own once the window clears, so there's no need to
-  restart the service (restarting only adds more calls and prolongs the throttle).
+- **429 / rate limit** — you're polling too many devices too often. The client
+  **automatically retries** a 429 (honoring the server's `Retry-After`), plus 5xx
+  and network blips, for both reads and writes — so a control action rides through
+  a short throttle instead of failing (bounded by `RL_MAX_RETRIES` /
+  `RL_RETRY_MAX_SLEEP`, and each retry still goes through the rate limiter). If you
+  see *sustained* 429s, raise `POLL_INTERVAL_SECONDS`, reduce rotation frequency,
+  and/or request a higher limit from Resideo. When a poll is ultimately throttled
+  the dashboard says so in place of the zone grid; zones return on their own once
+  the window clears, so there's no need to restart the service (restarting only
+  adds more calls and prolongs the throttle).
 - **Automations don't fire live** — `MQTT_ENABLED` must be `true` and the broker
   reachable (check the Automations status strip). Confirm your equipment is
   actually publishing to the exact topic in the rule. Use **Run now** to test the

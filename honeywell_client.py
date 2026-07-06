@@ -58,8 +58,6 @@ TOKEN_URL = f"{AUTH_BASE}/oauth2/token"
 TOKEN_SAFETY_WINDOW = 90
 # How long to wait for HTTP; (connect, read) so a stalled read can't hang forever.
 HTTP_TIMEOUT = (10, 30)
-# Bounded retries for transient failures on idempotent GETs.
-_GET_RETRIES = 2
 
 
 class HoneywellError(RuntimeError):
@@ -118,6 +116,8 @@ class HoneywellClient:
         token_path: str = "tokens.json",
         min_interval: float = 1.0,
         hourly_cap: int = 250,
+        max_retries: int = 4,
+        retry_max_sleep: float = 120.0,
     ):
         if not api_key or not api_secret:
             raise ValueError("api_key and api_secret are required")
@@ -125,6 +125,11 @@ class HoneywellClient:
         self.api_secret = api_secret
         self.redirect_uri = redirect_uri
         self.token_path = Path(token_path)
+        # Bounded retry for transient failures (429/5xx/network). Writes here set
+        # absolute state (setpoints, hold, mode), so they're idempotent and safe
+        # to re-send. Retries still pass through the rate limiter.
+        self.max_retries = max(0, int(max_retries))
+        self.retry_max_sleep = max(1.0, float(retry_max_sleep))
 
         self._lock = threading.Lock()          # guards the token fields below
         self._refresh_lock = threading.Lock()  # single-flights the refresh network call
@@ -275,6 +280,36 @@ class HoneywellClient:
 
     # ---------------------------------------------------------------- requests
 
+    @staticmethod
+    def _parse_retry_after(resp) -> Optional[float]:
+        """Seconds to wait per the server's Retry-After header (bare seconds or an
+        HTTP-date), or None if absent/unparseable. Lets us cooperate with a 429
+        instead of guessing the backoff."""
+        val = (resp.headers.get("Retry-After") or "").strip()
+        if not val:
+            return None
+        try:
+            return max(0.0, float(val))
+        except ValueError:
+            pass
+        try:
+            from email.utils import parsedate_to_datetime
+            import datetime as _dt
+            dt = parsedate_to_datetime(val)
+            if dt is not None:
+                now = _dt.datetime.now(dt.tzinfo) if dt.tzinfo else _dt.datetime.now()
+                return max(0.0, (dt - now).total_seconds())
+        except Exception:
+            pass
+        return None
+
+    def _retry_wait(self, attempt: int, retry_after: Optional[float]) -> float:
+        """How long to sleep before retry `attempt` (1-based): honor Retry-After
+        when the server sent one, else exponential backoff (2,4,8,16…), capped at
+        retry_max_sleep either way so a bad header can't park a thread for an hour."""
+        base = retry_after if retry_after is not None else 2.0 * (2 ** (attempt - 1))
+        return min(self.retry_max_sleep, max(0.0, base))
+
     def _request(self, method: str, path: str, *, params=None, json_body=None) -> Any:
         token = self._valid_token()
         params = dict(params or {})
@@ -285,9 +320,9 @@ class HoneywellClient:
             "Accept": "application/json",
         }
         url = f"{API_BASE}/{path.lstrip('/')}"
-        is_get = method.upper() == "GET"
 
-        attempt = 0
+        attempt = 0          # counts transient (429/5xx/network) retries
+        did_401_refresh = False
         while True:
             self._limiter.acquire()
             try:
@@ -295,34 +330,48 @@ class HoneywellClient:
                     method, url, headers=headers, params=params, json=json_body, timeout=HTTP_TIMEOUT
                 )
             except requests.exceptions.RequestException as exc:
-                # Transient network error: retry idempotent GETs a couple of times,
-                # otherwise surface as HoneywellError so callers handle it uniformly.
-                if is_get and attempt < _GET_RETRIES:
+                # Network blip: retry (writes are idempotent) up to the bound.
+                if attempt < self.max_retries:
                     attempt += 1
-                    time.sleep(min(2 ** attempt, 8))
+                    wait = self._retry_wait(attempt, None)
+                    log.warning("%s %s network error (%s); retry %d/%d in %.0fs",
+                                method, path, exc, attempt, self.max_retries, wait)
+                    time.sleep(wait)
+                    token = self._valid_token()  # token may have expired during backoff
+                    headers["Authorization"] = f"Bearer {token}"
                     continue
-                raise HoneywellError(f"{method} {path} network error: {exc}") from exc
+                raise HoneywellError(f"{method} {path} network error after {attempt} retries: {exc}") from exc
 
-            # One automatic refresh+retry on 401 in case the token died early.
-            if resp.status_code == 401:
-                log.info("Got 401; forcing a refresh and retrying once.")
+            # One automatic refresh+retry on 401 in case the token died early. This
+            # is separate from the transient-retry budget.
+            if resp.status_code == 401 and not did_401_refresh:
+                did_401_refresh = True
+                log.info("Got 401; forcing a refresh and retrying.")
                 token = self._refresh_and_get(used_token=token)
                 headers["Authorization"] = f"Bearer {token}"
-                self._limiter.acquire()
-                try:
-                    resp = self._session.request(
-                        method, url, headers=headers, params=params, json=json_body, timeout=HTTP_TIMEOUT
-                    )
-                except requests.exceptions.RequestException as exc:
-                    raise HoneywellError(f"{method} {path} network error after refresh: {exc}") from exc
-
-            if resp.status_code == 429:
-                raise HoneywellError("Rate limited by Honeywell (429). Slow down polling / request a higher limit.")
-            if 500 <= resp.status_code < 600 and is_get and attempt < _GET_RETRIES:
-                attempt += 1
-                time.sleep(min(2 ** attempt, 8))
                 continue
+
+            # Retry rate-limit (429) and server errors (5xx). Honors Retry-After on
+            # 429 so we back off exactly as long as Honeywell asks, then try again -
+            # so a control action eventually lands instead of failing on a throttle.
+            if resp.status_code == 429 or 500 <= resp.status_code < 600:
+                if attempt < self.max_retries:
+                    attempt += 1
+                    wait = self._retry_wait(attempt, self._parse_retry_after(resp))
+                    log.warning("%s %s -> HTTP %s; retry %d/%d in %.0fs",
+                                method, path, resp.status_code, attempt, self.max_retries, wait)
+                    time.sleep(wait)
+                    token = self._valid_token()
+                    headers["Authorization"] = f"Bearer {token}"
+                    continue
+                if resp.status_code == 429:
+                    raise HoneywellError(
+                        f"Rate limited by Honeywell (429) after {attempt} retries. "
+                        f"Raise POLL_INTERVAL_SECONDS / request a higher limit.")
+                raise HoneywellError(f"{method} {path} failed ({resp.status_code}) after {attempt} retries: {resp.text}")
+
             if not resp.ok:
+                # A real 4xx (bad request, not found, …) - not worth retrying.
                 raise HoneywellError(f"{method} {path} failed ({resp.status_code}): {resp.text}")
             if resp.status_code == 204 or not resp.content:
                 return None
