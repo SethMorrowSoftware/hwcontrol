@@ -59,6 +59,8 @@ client = HoneywellClient(
     redirect_uri=Config.REDIRECT_URI,
     min_interval=Config.RL_MIN_INTERVAL,
     hourly_cap=Config.RL_HOURLY_CAP,
+    max_retries=Config.RL_MAX_RETRIES,
+    retry_max_sleep=Config.RL_RETRY_MAX_SLEEP,
 )
 store = StateStore()
 bridge = None          # set up in lifespan if MQTT enabled

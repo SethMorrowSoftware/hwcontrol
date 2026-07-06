@@ -84,6 +84,12 @@ class Config:
     # --- Rate limiter guardrails ---
     RL_MIN_INTERVAL = max(0.0, _float("RL_MIN_INTERVAL", 1.0))
     RL_HOURLY_CAP = _int("RL_HOURLY_CAP", 250, minimum=1)
+    # Retry transient failures (429 rate-limit, 5xx, network blips) so a control
+    # action eventually goes through instead of failing on a hiccup. Bounded so a
+    # thread can't hang forever; retries go through the rate limiter and honor the
+    # server's Retry-After header. Set RL_MAX_RETRIES=0 to disable.
+    RL_MAX_RETRIES = _int("RL_MAX_RETRIES", 4, minimum=0)
+    RL_RETRY_MAX_SLEEP = max(1.0, _float("RL_RETRY_MAX_SLEEP", 120.0))
 
     # --- MQTT (optional) ---
     MQTT_ENABLED = _bool("MQTT_ENABLED", False)
