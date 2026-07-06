@@ -184,7 +184,9 @@ three plain-language steps:
   outage. (The form won't let you put the same zone in both.)
 - **Step 2 — How should they share the generator?** Leave it on **Half on / half
   off** (the safe default) or choose a set number, set the **swap interval** (≥5 min),
-  and the **hold temperatures** while a zone is running.
+  the **run mode** while a zone is on (**Auto** = heat or cool to hold the band,
+  the year-round default; or force **Cool** / **Heat** — e.g. Cool in summer), and
+  the **hold temperatures**.
 - **Step 3 — How does the app know the generator is on?** It's preset to listen for
   `on` / `off` on `facility/generator/status`. The MQTT topic/payload details live
   under **"Change the message details (advanced)"** if your equipment differs.
