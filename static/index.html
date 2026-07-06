@@ -641,6 +641,13 @@
         <div class="fld"><label for="g-int">Swap every … minutes</label>
           <input id="g-int" type="number" min="5" value="15">
           <div class="hlp">How often they take turns. 15 minutes is gentle on the equipment (never below 5).</div></div>
+        <div class="fld"><label for="g-mode">Run mode while a zone is on</label>
+          <div class="field sel"><select id="g-mode">
+            <option value="Auto">Auto — heat OR cool to hold the range (recommended)</option>
+            <option value="Cool">Cool only</option>
+            <option value="Heat">Heat only</option>
+          </select></div>
+          <div class="hlp">Auto keeps each zone between the Heat and Cool values below, heating or cooling as needed (best year-round; needs auto-changeover support). Choose Cool or Heat to force one — e.g. Cool in summer.</div></div>
         <div class="fld"><label for="g-heat">Hold Heat …° while a zone is running</label>
           <input id="g-heat" type="number" value="66"></div>
         <div class="fld"><label for="g-cool">Hold Cool …° while a zone is running</label>
@@ -1527,6 +1534,7 @@ function updateGeneratorPreview(){
   const cool=esc(gVal("g-cool").trim()||"80");
   const runMode=gVal("g-runmode");
   const run=esc(gVal("g-run").trim()||"2");
+  const mode=esc(gVal("g-mode")||"Auto");
 
   const listen=document.getElementById("g-listen");
   if(listen){
@@ -1542,10 +1550,13 @@ function updateGeneratorPreview(){
     return;
   }
   const share = runMode==="half" ? "half-on/half-off" : `${run} at a time`;
+  const modeBit = mode==="Cool" ? `in <b>Cool</b> (hold <b>${cool}°</b>)`
+    : mode==="Heat" ? `in <b>Heat</b> (hold <b>${heat}°</b>)`
+    : `in <b>Auto</b> (hold <b>Heat ${heat}° / Cool ${cool}°</b>)`;
   const onParts=[];
   if(hasShed) onParts.push(`switch <b>OFF</b> ${zoneNames(shed)}`);
-  if(hasRot) onParts.push(`keep ${zoneNames(rotate)} running <b>${share}</b>, swapping every `+
-    `<b>${intv} min</b> while holding <b>Heat ${heat}°</b> / <b>Cool ${cool}°</b>`);
+  if(hasRot) onParts.push(`keep ${zoneNames(rotate)} running <b>${share}</b> ${modeBit}, swapping every `+
+    `<b>${intv} min</b>`);
   const onLine=`When the generator turns ON (<code>${topic}</code> = <code>${onVal}</code>): ${onParts.join("; ")}.`;
   const offLine=`When utility power returns (= <code>${offVal}</code>): put every zone back exactly how it was, then resume your daily programs.`;
   prev.innerHTML=
@@ -1675,6 +1686,7 @@ async function createGeneratorRules(btn){
   const interval=Number(document.getElementById("g-int").value);
   const heat=Number(document.getElementById("g-heat").value);
   const cool=Number(document.getElementById("g-cool").value);
+  const mode=document.getElementById("g-mode").value;
   const hasShed=shed==="all"||(Array.isArray(shed)&&shed.length);
   const hasRot=rotate==="all"||(Array.isArray(rotate)&&rotate.length);
   // Friendly, mistake-proof validation: a clear toast AND an inline hint by the button.
@@ -1705,9 +1717,13 @@ async function createGeneratorRules(btn){
   const onActions=[{type:"snapshot",name:"pre_generator",targets:snapTargets}];
   if(hasShed) onActions.push({type:"set",targets:shed,values:{mode:"Off"}});
   if(hasRot){
+    // The running units hold their setpoints in the chosen mode. Auto lets each
+    // zone heat OR cool to stay in the Heat..Cool band (right year-round); Cool/Heat
+    // force one direction. Both setpoints are sent so the band is defined either way.
+    const on_values={mode:mode,heatSetpoint:heat,coolSetpoint:cool,thermostatSetpointStatus:"PermanentHold"};
+    if(mode==="Auto") on_values.autoChangeoverActive=true;
     const rot={type:"rotate",rotation_id:"generator",targets:rotate,interval_minutes:interval,
-      on_values:{mode:"Heat",heatSetpoint:heat,coolSetpoint:cool,thermostatSetpointStatus:"PermanentHold"},
-      off_values:{mode:"Off"}};
+      on_values:on_values, off_values:{mode:"Off"}};
     if(runMode==="half") rot.on_fraction=0.5; else rot.run_count=run;
     onActions.push(rot);
   }
@@ -1753,7 +1769,10 @@ function renderActionFields(){
           <option value="count">Set number</option><option value="half">Half on/off</option></select></div></div>
         <div class="fld" id="a-run-wrap"><label>Number running</label><input id="a-run" type="number" min="1" value="2"></div>
         <div class="fld"><label>Interval (min, ≥5)</label><input id="a-int" type="number" min="5" value="15"></div>
+        <div class="fld"><label>Run mode (on)</label><div class="field sel"><select id="a-onmode">
+          <option value="Auto">Auto</option><option value="Cool">Cool</option><option value="Heat">Heat</option></select></div></div>
         <div class="fld"><label>Heat setpoint (on)</label><input id="a-onheat" type="number" value="66"></div>
+        <div class="fld"><label>Cool setpoint (on)</label><input id="a-oncool" type="number" value="80"></div>
       </div>`;
     makePicker("a-rot-tgt");
   } else if(t==="snapshot"){
@@ -1777,8 +1796,9 @@ function addDraftAction(){
   else if(t==="rotate"){ a.targets=readPicker("a-rot-tgt");
     a.rotation_id=document.getElementById("a-rid").value.trim();
     const runMode=document.getElementById("a-runmode").value;
+    const onmode=document.getElementById("a-onmode").value;
     a.interval_minutes=Number(document.getElementById("a-int").value);
-    const onheat=num("a-onheat");
+    const onheat=num("a-onheat"), oncool=num("a-oncool");
     if(!a.targets.length&&a.targets!=="all"){ toast("Pick zones for rotation",true); return; }
     if(!a.rotation_id){ toast("Enter a rotation id",true); return; }
     // "Half" auto-adjusts to the group size; a set number is guarded (a blank/0
@@ -1788,7 +1808,9 @@ function addDraftAction(){
       if(!Number.isFinite(a.run_count)||a.run_count<1){ toast("“Number running” must be at least 1",true); return; } }
     if(!Number.isFinite(a.interval_minutes)||a.interval_minutes<5){ toast("Interval must be at least 5 minutes",true); return; }
     if(onheat!=null&&(onheat<40||onheat>95)){ toast("Heat setpoint must be between 40 and 95°",true); return; }
-    a.on_values={mode:"Heat",heatSetpoint:onheat,thermostatSetpointStatus:"PermanentHold"};
+    if(oncool!=null&&(oncool<40||oncool>95)){ toast("Cool setpoint must be between 40 and 95°",true); return; }
+    a.on_values={mode:onmode,heatSetpoint:onheat,coolSetpoint:oncool,thermostatSetpointStatus:"PermanentHold"};
+    if(onmode==="Auto") a.on_values.autoChangeoverActive=true;
     a.off_values={mode:"Off"}; }
   else if(t==="snapshot"){ a.targets=readPicker("a-snap-tgt"); a.name=document.getElementById("a-snap").value.trim(); }
   else if(t==="restore"){ a.name=document.getElementById("a-rsnap").value.trim();
