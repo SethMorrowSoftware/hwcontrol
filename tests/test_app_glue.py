@@ -3,6 +3,8 @@ field whitelisting, and store helpers used by the poller's reap guard."""
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -196,6 +198,76 @@ class EndToEndUtilityRestore(unittest.TestCase):
             zone_targets = [s[1] for s in seq if s[0] == "zone"]
             self.assertEqual(sorted(zone_targets), ["Z1", "Z2"],
                              "restore must still put every snapshotted zone back first")
+
+
+class ToggleEnableAssertsActivePeriod(unittest.TestCase):
+    """Re-enabling a program from the dashboard toggle must apply its active
+    period immediately (same as create/edit), not wait for the next boundary."""
+
+    def setUp(self):
+        self._orig = app_mod.scheduler
+
+    def tearDown(self):
+        app_mod.scheduler = self._orig
+
+    def test_enable_asserts_now(self):
+        asserted = threading.Event()
+
+        class FakeSched:
+            def set_enabled(self, rid, en):
+                return True
+            def apply_active_now(self, rid):
+                asserted.set()
+        app_mod.scheduler = FakeSched()
+        app_mod.api_toggle_schedule("r1", True)
+        self.assertTrue(asserted.wait(2), "enabling must re-assert the active period")
+
+    def test_disable_does_not_assert(self):
+        calls = []
+
+        class FakeSched:
+            def set_enabled(self, rid, en):
+                return True
+            def apply_active_now(self, rid):
+                calls.append(rid)
+        app_mod.scheduler = FakeSched()
+        app_mod.api_toggle_schedule("r1", False)
+        time.sleep(0.2)
+        self.assertEqual(calls, [])
+
+
+class PollPartialHealth(unittest.TestCase):
+    """A location that transiently reports no thermostats must mark the poll
+    degraded (those zones show stale data) and must not reap those zones."""
+
+    def setUp(self):
+        self._orig = (app_mod.client, app_mod.store)
+
+    def tearDown(self):
+        app_mod.client, app_mod.store = self._orig
+
+    def test_partial_poll_marks_error_and_skips_reap(self):
+        store = StateStore()
+        store.ingest([{"deviceID": "B1", "name": "B1", "isAlive": True,
+                       "changeableValues": {"mode": "Off"}}], 2)
+        app_mod.store = store
+
+        thermo_a = {"deviceID": "A1", "name": "A1", "isAlive": True,
+                    "changeableValues": {"mode": "Heat"}}
+
+        class FakeClient:
+            is_authorized = True
+            def get_locations(self):
+                return [{"locationID": 1, "devices": [thermo_a]},
+                        {"locationID": 2, "devices": []}]
+        app_mod.client = FakeClient()
+
+        app_mod.poll_once()
+        _, err = store.poll_status()
+        self.assertIsNotNone(err, "a partial poll must not read as a healthy green poll")
+        self.assertIn("no thermostats", err)
+        self.assertIn("B1", store.all_device_ids(),
+                      "reap must be skipped for the location that went transiently empty")
 
 
 class StoreLocationHelpers(unittest.TestCase):

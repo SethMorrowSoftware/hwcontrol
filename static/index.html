@@ -734,6 +734,7 @@
   </section>
 
   <section class="view" id="view-schedules" role="tabpanel" aria-labelledby="tab-schedules" tabindex="0" hidden>
+    <div class="secondary-note" id="schedTz" style="margin:0 0 14px" hidden></div>
     <div class="sectitle">Programs</div>
     <div id="ruleList"></div>
 
@@ -863,6 +864,19 @@ async function api(path, opts={}){
   setOnline(true);
   return r.status===204 ? null : r.json();
 }
+/* One source of truth for the "live data may be stale" banner: a failed fetch of
+   our own server wins, then a failing Honeywell poll (cards exist but show
+   last-known values), else clear. Called whenever either input changes. */
+function updateHealthBanner(){
+  if(!state.loaded) return;
+  if(state.fetchErr){ setPollHealth(false, state.fetchErr); return; }
+  const s=state.status||{};
+  if(s.last_poll_error && state.devices.length){
+    setPollHealth(false, "The last update from Honeywell failed — cards show the last known values. Details: "+s.last_poll_error);
+    return;
+  }
+  setPollHealth(true);
+}
 /* Show/clear the "live data may be stale" banner when the last poll cycle failed. */
 function setPollHealth(ok, msg){
   const b=document.getElementById("pollBanner"); if(!b) return;
@@ -928,6 +942,8 @@ async function refreshStatus(){
   try{
     const s = await api("/api/status");
     state.status = s;
+    updateHealthBanner();
+    renderScheduleTz();
     const a=document.getElementById("authDot"), at=document.getElementById("authText");
     a.className="dot "+(s.authorized?"on":"off");
     at.textContent = s.authorized ? "Connected" : "Not connected";
@@ -1012,6 +1028,12 @@ async function applyZone(id,btn){
   if(p.dirty.has("hold")&&p.hold!=null) body.thermostatSetpointStatus=p.hold;
   if(p.dirty.has("fan")&&p.fan!=null) body.fan=p.fan;
   if(!Object.keys(body).length){ toast("No changes to apply"); return; }
+  // A mode/setpoint change must ride with a hold that makes it stick: merged
+  // onto a NoHold zone the write "succeeds" but the onboard schedule reverts it
+  // right away. Send the effective hold, upgrading NoHold to a temporary hold —
+  // the same thing adjusting the dial on the thermostat itself does.
+  if((body.mode||body.heatSetpoint!=null||body.coolSetpoint!=null)&&!body.thermostatSetpointStatus)
+    body.thermostatSetpointStatus=(p.hold&&p.hold!=="NoHold")?p.hold:"TemporaryHold";
   try{
     await withBusy(btn,()=>api("/api/devices/"+id+"/set",{method:"POST",body:JSON.stringify(body)}));
     p.dirty.clear(); toast("Applied to "+deviceName(id)); loadDevices();
@@ -1215,19 +1237,31 @@ async function loadDevices(){
   try{
     const r=await api("/api/devices"); state.devices=r.devices||[]; state.loaded=true;
     state.devicesTs=Math.floor(Date.now()/1000);   // last-good update time for staleness
-    setPollHealth(true);
+    state.fetchErr=null; updateHealthBanner();
     renderZones(); populateTargets();
     renderAutoStripe();   // zone names + live equipment counts may now resolve
     const sig=state.devices.map(d=>d.deviceID).sort().join("|");
     if(sig!==state.pickerSig){ state.pickerSig=sig; populatePickers(); loadOnboard(); }
   }catch(e){
     // Don't let stale cards look live: surface the failure and keep the last-good age.
-    setPollHealth(false, e.status===401 ? e.message : ("Couldn't refresh zones — "+e.message));
+    state.fetchErr = e.status===401 ? e.message : ("Couldn't refresh zones — "+e.message);
     if(!state.loaded){ state.loaded=true; renderZones(); }
+    updateHealthBanner();
   }
 }
 
 /* ---------- schedules (daily programs) ---------- */
+/* Show which timezone program times run in, with the server's current clock —
+   a wrong/unset SCHEDULE_TZ (programs firing hours off) is the most common
+   schedule problem, and this makes it visible at a glance. */
+function renderScheduleTz(){
+  const el=document.getElementById("schedTz"); if(!el) return;
+  const s=state.status||{};
+  if(!s.schedule_timezone){ el.hidden=true; return; }
+  el.hidden=false;
+  el.innerHTML=`Program times run in <b>${esc(s.schedule_timezone)}</b>`+
+    (s.server_time?` — server clock now: <b>${esc(s.server_time)}</b>. If that clock looks wrong, fix <code style="font-family:var(--mono)">SCHEDULE_TZ</code> in .env before trusting the times below.`:".");
+}
 const DAYS=["mon","tue","wed","thu","fri","sat","sun"];
 let selDays=new Set();
 let progPeriods=[];        // [{time,mode,heat,cool,hold}]
@@ -1710,6 +1744,13 @@ async function createGeneratorRules(btn){
     if(!Number.isFinite(heat)||heat<40||heat>95){ fail("“Hold Heat” must be between 40 and 95°."); return; }
     if(!Number.isFinite(cool)||cool<40||cool>95){ fail("“Hold Cool” must be between 40 and 95°."); return; }
   }
+  // Guard against double-clicks / re-creation: two plans on the same trigger and
+  // rotation id fire together and fight each other.
+  const existingPlan=(state.autos||[]).filter(r=>(r.name||"").startsWith("Generator:"));
+  if(existingPlan.length && !await confirmDialog(
+      "An outage plan already exists ("+existingPlan.length+" generator rule(s) in the list below). "+
+      "A second plan would fire on the same trigger and fight the first — usually you want to "+
+      "delete or edit the existing rules instead. Create another anyway?","Create anyway")) return;
 
   let snapTargets="all";
   if(shed!=="all"&&rotate!=="all") snapTargets=[...new Set([...(Array.isArray(shed)?shed:[]),...(Array.isArray(rotate)?rotate:[])])];
@@ -1889,7 +1930,9 @@ async function saveAuto(btn){
   }
   if(!conditions.length){ toast("Add at least one condition",true); return; }
   if(!draftActions.length){ toast("Add at least one action",true); return; }
-  const rule={name,enabled:true,trigger:{mode,retrigger,conditions},actions:draftActions};
+  // No "enabled" here: the server defaults a new rule to enabled and PRESERVES
+  // the current state on edit — saving a disabled rule must not silently arm it.
+  const rule={name,trigger:{mode,retrigger,conditions},actions:draftActions};
   try{
     if(editingAuto)
       await withBusy(btn,()=>api("/api/automations/"+editingAuto,{method:"PUT",body:JSON.stringify(rule)}));

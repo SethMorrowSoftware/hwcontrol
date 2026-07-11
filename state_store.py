@@ -259,10 +259,17 @@ class StateStore:
         t = new.get("indoorTemperature")
         if t is None:
             return
+        # Thresholds are configured in Fahrenheit; a device reporting Celsius
+        # would otherwise read every normal room (~21°C) as "below 55°" and
+        # alarm constantly while missing real excursions.
+        lo, hi = self.temp_low_alert, self.temp_high_alert
+        if str(new.get("units") or "").lower().startswith("c"):
+            lo = None if lo is None else round((lo - 32) * 5.0 / 9.0, 1)
+            hi = None if hi is None else round((hi - 32) * 5.0 / 9.0, 1)
         zone = "ok"
-        if self.temp_high_alert is not None and t >= self.temp_high_alert:
+        if hi is not None and t >= hi:
             zone = "high"
-        elif self.temp_low_alert is not None and t <= self.temp_low_alert:
+        elif lo is not None and t <= lo:
             zone = "low"
 
         prev = self._temp_zone.get(device_id, "ok")
@@ -272,9 +279,9 @@ class StateStore:
 
         name = new.get("name") or device_id
         if zone == "high":
-            msg = f"{name} is {t}° (above {self.temp_high_alert}°)"
+            msg = f"{name} is {t}° (above {hi}°)"
         else:
-            msg = f"{name} is {t}° (below {self.temp_low_alert}°)"
+            msg = f"{name} is {t}° (below {lo}°)"
         out.append({"severity": "warning", "kind": "temp_" + zone,
                     "message": msg, "deviceID": device_id, "ts": time.time()})
 

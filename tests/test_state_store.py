@@ -50,6 +50,32 @@ class EquipmentChangeEvents(unittest.TestCase):
         self.assertFalse([e for e in events if e.get("field") == "equipmentStatus"])
 
 
+class CelsiusTempAlerts(unittest.TestCase):
+    """Out-of-range thresholds are configured in Fahrenheit; a device reporting
+    Celsius must have them converted, not compared raw (a normal 21°C room would
+    otherwise read as 'below 55°' and alarm forever)."""
+
+    def temp_alerts(self, s):
+        return [a for a in s.alerts(limit=50) if a["kind"].startswith("temp_")]
+
+    def test_normal_celsius_room_does_not_false_alarm(self):
+        s = StateStore()
+        s.ingest([raw(mode="Heat", units="Celsius", indoorTemperature=21)], 1)
+        self.assertEqual(self.temp_alerts(s), [])
+
+    def test_celsius_excursion_still_alerts(self):
+        s = StateStore()
+        s.ingest([raw(mode="Heat", units="Celsius", indoorTemperature=8)], 1)  # ~46°F
+        kinds = [a["kind"] for a in self.temp_alerts(s)]
+        self.assertIn("temp_low", kinds)
+
+    def test_fahrenheit_thresholds_unchanged(self):
+        s = StateStore()
+        s.ingest([raw(mode="Heat", units="Fahrenheit", indoorTemperature=50)], 1)
+        kinds = [a["kind"] for a in self.temp_alerts(s)]
+        self.assertIn("temp_low", kinds)
+
+
 class MismatchAlert(unittest.TestCase):
     """'Set to Off but actively heating' must alert on the SECOND consecutive
     poll (one poll of grace for post-mode-change run-out), exactly once per
