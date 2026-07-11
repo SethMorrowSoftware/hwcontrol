@@ -911,13 +911,16 @@ def api_schedules():
 def api_add_schedule(rule: dict = Body(...)):
     if not scheduler:
         raise HTTPException(503, "Scheduler not ready")
+    # Saving a program updates the PLAN only - zones change at the scheduled
+    # period times, never as a side effect of editing. `apply_now` is the
+    # explicit opt-in ("also apply the current period now" in the dashboard);
+    # it's popped so it never persists into the rule itself.
+    apply_now = bool(rule.pop("apply_now", False))
     try:
         created = scheduler.add_rule(rule)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    # Take control immediately: apply the program's currently-active period now,
-    # rather than waiting for the next period boundary.
-    if created.get("enabled", True):
+    if apply_now and created.get("enabled", True):
         threading.Thread(target=scheduler.apply_active_now,
                          args=(created["id"],), daemon=True).start()
     return {"ok": True, "rule": created}
@@ -927,13 +930,14 @@ def api_add_schedule(rule: dict = Body(...)):
 def api_update_schedule(rule_id: str, rule: dict = Body(...)):
     if not scheduler:
         raise HTTPException(503, "Scheduler not ready")
+    apply_now = bool(rule.pop("apply_now", False))
     try:
         updated = scheduler.update_rule(rule_id, rule)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     if updated is None:
         raise HTTPException(404, "No such rule")
-    if updated.get("enabled", True):
+    if apply_now and updated.get("enabled", True):
         threading.Thread(target=scheduler.apply_active_now,
                          args=(rule_id,), daemon=True).start()
     return {"ok": True, "rule": updated}
@@ -956,12 +960,11 @@ def api_toggle_schedule(rule_id: str, enabled: bool = Body(..., embed=True)):
     ok = scheduler.set_enabled(rule_id, enabled)
     if not ok:
         raise HTTPException(404, "No such rule")
-    if enabled:
-        # Same as create/edit: apply the program's currently-active period now,
-        # so re-enabling takes effect immediately instead of at the next
-        # boundary (which can be hours away).
-        threading.Thread(target=scheduler.apply_active_now,
-                         args=(rule_id,), daemon=True).start()
+    # Deliberately no immediate write here: program changes (including
+    # re-enabling) follow the schedule - the zones change at the program's
+    # period times. Startup and post-outage-restore still re-assert active
+    # periods, because those catch up boundaries that fired while the app
+    # was down (that's what keeps the schedule accurate).
     return {"ok": True}
 
 

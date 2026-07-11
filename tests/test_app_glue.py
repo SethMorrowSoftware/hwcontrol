@@ -200,40 +200,65 @@ class EndToEndUtilityRestore(unittest.TestCase):
                              "restore must still put every snapshotted zone back first")
 
 
-class ToggleEnableAssertsActivePeriod(unittest.TestCase):
-    """Re-enabling a program from the dashboard toggle must apply its active
-    period immediately (same as create/edit), not wait for the next boundary."""
+class ProgramChangesFollowSchedule(unittest.TestCase):
+    """Saving/enabling a program must never drive zones as a side effect - the
+    zones change at the scheduled period times. Immediate application is an
+    explicit opt-in (apply_now), which is stripped before the rule is stored."""
+
+    class FakeSched:
+        def __init__(self):
+            self.saved = None
+            self.asserted = threading.Event()
+
+        def add_rule(self, rule):
+            self.saved = dict(rule)
+            return dict(rule, id="r1", enabled=rule.get("enabled", True))
+
+        def update_rule(self, rid, rule):
+            self.saved = dict(rule)
+            return dict(rule, id=rid, enabled=rule.get("enabled", True))
+
+        def set_enabled(self, rid, en):
+            return True
+
+        def apply_active_now(self, rid):
+            self.asserted.set()
+
+    RULE = {"name": "p", "targets": "all",
+            "periods": [{"time": "06:00", "action": {"mode": "Heat"}}]}
 
     def setUp(self):
         self._orig = app_mod.scheduler
+        self.sched = self.FakeSched()
+        app_mod.scheduler = self.sched
 
     def tearDown(self):
         app_mod.scheduler = self._orig
 
-    def test_enable_asserts_now(self):
-        asserted = threading.Event()
+    def test_create_does_not_apply_by_default(self):
+        app_mod.api_add_schedule(dict(self.RULE))
+        self.assertFalse(self.sched.asserted.wait(0.3),
+                         "saving a program must not write to zones by default")
 
-        class FakeSched:
-            def set_enabled(self, rid, en):
-                return True
-            def apply_active_now(self, rid):
-                asserted.set()
-        app_mod.scheduler = FakeSched()
+    def test_update_does_not_apply_by_default(self):
+        app_mod.api_update_schedule("r1", dict(self.RULE))
+        self.assertFalse(self.sched.asserted.wait(0.3))
+
+    def test_enable_does_not_apply(self):
         app_mod.api_toggle_schedule("r1", True)
-        self.assertTrue(asserted.wait(2), "enabling must re-assert the active period")
+        self.assertFalse(self.sched.asserted.wait(0.3))
 
-    def test_disable_does_not_assert(self):
-        calls = []
+    def test_apply_now_opt_in_applies_and_is_stripped(self):
+        app_mod.api_add_schedule(dict(self.RULE, apply_now=True))
+        self.assertTrue(self.sched.asserted.wait(2),
+                        "apply_now must apply the active period immediately")
+        self.assertNotIn("apply_now", self.sched.saved,
+                         "apply_now must not persist into the stored rule")
 
-        class FakeSched:
-            def set_enabled(self, rid, en):
-                return True
-            def apply_active_now(self, rid):
-                calls.append(rid)
-        app_mod.scheduler = FakeSched()
-        app_mod.api_toggle_schedule("r1", False)
-        time.sleep(0.2)
-        self.assertEqual(calls, [])
+    def test_apply_now_on_update_applies(self):
+        self.sched.asserted.clear()
+        app_mod.api_update_schedule("r1", dict(self.RULE, apply_now=True))
+        self.assertTrue(self.sched.asserted.wait(2))
 
 
 class PollPartialHealth(unittest.TestCase):
