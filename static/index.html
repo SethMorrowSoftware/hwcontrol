@@ -745,7 +745,9 @@
         "Turn OFF" at night, setbacks midday, and so on.</div>
       <div class="form-grid">
         <div class="fld"><label for="p-name">Program name</label><input id="p-name" placeholder="Warehouse daily program"></div>
-        <div class="fld"><label for="p-target">Apply to</label><div class="field sel"><select id="p-target"><option value="all">All zones</option></select></div></div>
+        <div class="fld full"><label>Apply to</label>
+          <div class="hlp">Pick any set of zones — one, several, or all. The program drives every selected zone together (e.g. group the arcade units, or the rink units, into one program).</div>
+          <div class="picker" id="p-zones"></div></div>
         <div class="fld full"><label>Days (leave empty for every day)</label>
           <div class="days" id="p-days"></div></div>
       </div>
@@ -1238,7 +1240,7 @@ async function loadDevices(){
     const r=await api("/api/devices"); state.devices=r.devices||[]; state.loaded=true;
     state.devicesTs=Math.floor(Date.now()/1000);   // last-good update time for staleness
     state.fetchErr=null; updateHealthBanner();
-    renderZones(); populateTargets();
+    renderZones();
     renderAutoStripe();   // zone names + live equipment counts may now resolve
     const sig=state.devices.map(d=>d.deviceID).sort().join("|");
     if(sig!==state.pickerSig){ state.pickerSig=sig; populatePickers(); loadOnboard(); }
@@ -1266,7 +1268,6 @@ const DAYS=["mon","tue","wed","thu","fri","sat","sun"];
 let selDays=new Set();
 let progPeriods=[];        // [{time,mode,heat,cool,hold}]
 let editingProgram=null;   // rule id while editing
-let editProgramTargets=null; // original multi-zone target array while editing (single-select can't hold it)
 
 function renderDayPicker(){
   const c=document.getElementById("p-days"); if(!c) return; c.innerHTML="";
@@ -1275,16 +1276,6 @@ function renderDayPicker(){
     el.setAttribute("aria-pressed", selDays.has(d));
     el.onclick=()=>{ selDays.has(d)?selDays.delete(d):selDays.add(d); renderDayPicker(); };
     c.appendChild(el); });
-}
-function populateTargets(){
-  const sel=document.getElementById("p-target"); if(!sel) return; const cur=sel.value;
-  // When editing a program that targets several specific zones, keep a synthetic
-  // option so a background poll's re-populate can't collapse it to one zone.
-  const multi = (editProgramTargets && editProgramTargets.length>1)
-    ? `<option value="__multi">Multiple zones (${editProgramTargets.length}) — keep as set</option>` : "";
-  sel.innerHTML=multi+'<option value="all">All zones</option>'+
-    state.devices.map(d=>`<option value="${esc(d.deviceID)}">${esc(d.name)}</option>`).join("");
-  sel.value=cur||"all";
 }
 function periodAction(p){
   const a={}; if(p.mode) a.mode=p.mode;
@@ -1355,10 +1346,9 @@ async function loadSchedules(){
   }catch(e){}
 }
 function resetProgramForm(){
-  editingProgram=null; editProgramTargets=null; selDays=new Set(); progPeriods=[];
+  editingProgram=null; selDays=new Set(); progPeriods=[];
   const nm=document.getElementById("p-name"); if(nm)nm.value="";
-  populateTargets();   // rebuild options (drops any leftover "__multi")
-  const t=document.getElementById("p-target"); if(t)t.value="all";
+  makePicker("p-zones"); setPicker("p-zones",[]);   // fresh form: deliberate zone choice
   document.getElementById("progFormTitle").textContent="New program";
   document.getElementById("p-save").textContent="Create program";
   document.getElementById("p-cancel").hidden=true;
@@ -1368,12 +1358,7 @@ function editProgram(id){
   const r=(state.schedules||[]).find(x=>x.id===id); if(!r) return;
   editingProgram=id;
   document.getElementById("p-name").value=r.name||"";
-  // Preserve a multi-zone target set instead of collapsing it to the first zone.
-  editProgramTargets=(Array.isArray(r.targets)&&r.targets.length>1)?r.targets.slice():null;
-  populateTargets();
-  const t=document.getElementById("p-target");
-  t.value = editProgramTargets ? "__multi"
-    : (Array.isArray(r.targets) ? (r.targets[0]||"all") : (r.targets||"all"));
+  makePicker("p-zones"); setPicker("p-zones", r.targets==null?"all":r.targets);
   selDays=new Set((r.days||[]).map(d=>String(d).toLowerCase()));
   progPeriods=(r.periods||[]).map(p=>{ const a=p.action||{};
     return {time:p.time,mode:a.mode||'',heat:a.heatSetpoint??'',cool:a.coolSetpoint??'',hold:a.thermostatSetpointStatus||'PermanentHold'}; });
@@ -1385,9 +1370,9 @@ function editProgram(id){
 }
 async function saveProgram(btn){
   const name=(document.getElementById("p-name").value.trim())||"Program";
-  const sel=document.getElementById("p-target").value;
-  // "__multi" means the operator left the preserved multi-zone target set untouched.
-  const target = (sel==="__multi" && editProgramTargets) ? editProgramTargets : sel;
+  // "all" or any custom group of zones (one, several) from the picker.
+  const target=readPicker("p-zones");
+  if(target!=="all"&&!target.length){ toast("Pick at least one zone for this program",true); return; }
   if(!progPeriods.length){ toast("Add at least one period",true); return; }
   const periods=[];
   for(const p of progPeriods){
@@ -1516,13 +1501,25 @@ function renderAlerts(){
 /* ---------- automations ---------- */
 function makePicker(id){
   const c=document.getElementById(id); if(!c) return;
+  // Preserve the current selection across rebuilds (device-list refreshes), so
+  // a background rebuild mid-edit can't silently clear the operator's picks.
+  const prevAll=!!c.querySelector(".selall input:checked");
+  const prevSel=new Set([...c.querySelectorAll(".opt input:checked")].map(cb=>cb.value));
   if(!state.devices.length){ c.className="picker empty";
     c.textContent="No zones yet — connect the account and wait for the first poll."; return; }
   c.className="picker";
   c.innerHTML =
-    `<label class="selall"><input type="checkbox" onchange="pickAll('${id}',this.checked)"> All zones</label>`+
-    state.devices.map(d=>`<label class="opt"><input type="checkbox" value="${esc(d.deviceID)}"> `+
+    `<label class="selall"><input type="checkbox"${prevAll?' checked':''} onchange="pickAll('${id}',this.checked)"> All zones</label>`+
+    state.devices.map(d=>`<label class="opt"><input type="checkbox" value="${esc(d.deviceID)}"${(prevAll||prevSel.has(d.deviceID))?' checked':''}> `+
       `<span>${esc(d.name)}</span><span class="cid">${esc(d.deviceID)}</span></label>`).join("");
+}
+/* Set a picker's checkboxes to match a saved target: "all" | "deviceID" | [ids]. */
+function setPicker(id,targets){
+  const c=document.getElementById(id); if(!c) return;
+  const all=targets==="all";
+  const ids=new Set(all?[]:(Array.isArray(targets)?targets:[targets]));
+  const sa=c.querySelector(".selall input"); if(sa) sa.checked=all;
+  c.querySelectorAll(".opt input").forEach(cb=>{ cb.checked = all||ids.has(cb.value); });
 }
 function pickAll(id,on){ document.querySelectorAll(`#${id} .opt input`).forEach(cb=>cb.checked=on); }
 function readPicker(id){
@@ -1530,7 +1527,7 @@ function readPicker(id){
   if(all&&all.checked) return "all";
   return [...document.querySelectorAll(`#${id} .opt input:checked`)].map(cb=>cb.value);
 }
-function populatePickers(){ makePicker("g-shed"); makePicker("g-rotate");
+function populatePickers(){ makePicker("g-shed"); makePicker("g-rotate"); makePicker("p-zones");
   if(document.getElementById("a-type")) renderActionFields();
   updateGeneratorPreview(); }
 

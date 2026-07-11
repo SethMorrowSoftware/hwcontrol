@@ -156,8 +156,9 @@ on an air-gapped LAN) that polls the local API every ~10s. Four tabs:
 - **Automations** — the generator load-shed setup, a live status strip (active
   rotations, saved snapshots, MQTT connection), the list of rules (editable), and a
   custom multi-condition (AND/OR) rule builder. Details below.
-- **Schedules** — daily programs: pick a target and days, then add timed periods
-  (ON / OFF / temperature changes) with one-tap presets. Programs are editable.
+- **Schedules** — daily programs: pick any group of zones (one, several, or all)
+  and days, then add timed periods (ON / OFF / temperature changes) with one-tap
+  presets. Programs are editable.
 - **Alerts** — a feed of offline/again events, out-of-range temperatures,
   equipment faults (a zone actively heating/cooling while set to Off — checked
   against the live equipment state, debounced across two polls), and a log of
@@ -254,10 +255,12 @@ reporting "connected" — so a dead broker during an outage is visible, not hidd
 
 ## Schedules & source of truth
 
-**Schedules are daily programs.** A program targets one zone (or all) on selected
-days and runs any number of timed **periods** — each period sets a mode and/or
-setpoints with a hold. Build them under **Schedules**, using one-tap **Turn ON**,
-**Set temperature**, and **Turn OFF** presets, and edit them in place.
+**Schedules are daily programs.** A program targets any set of zones — one, a
+custom group (e.g. all the arcade units), or all — on selected days and runs any
+number of timed **periods** — each period sets a mode and/or setpoints with a
+hold. Build them under **Schedules**: pick the zones with checkboxes, then use
+the one-tap **Turn ON**, **Set temperature**, and **Turn OFF** presets, and edit
+them in place.
 
 **How a program overrides the thermostat's own schedule.** Each period writes a
 setpoint with a *hold*:

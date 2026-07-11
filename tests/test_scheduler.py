@@ -71,6 +71,49 @@ class TimezoneFallback(unittest.TestCase):
             self.assertIn("New_York", s.timezone_name())
 
 
+class GroupTargets(unittest.TestCase):
+    """A program can target any custom group of zones (a non-empty list of
+    deviceIDs), not just one zone or 'all'."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.s = sched(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @staticmethod
+    def periods():
+        return [{"time": "06:00", "action": {"mode": "Heat"}}]
+
+    def test_group_accepted_and_deduped(self):
+        r = self.s.add_rule({"targets": ["A", "B", "A"], "periods": self.periods()})
+        self.assertEqual(r["targets"], ["A", "B"],
+                         "a zone picked twice must not be written twice per period")
+
+    def test_empty_group_rejected(self):
+        with self.assertRaises(ValueError):
+            self.s.add_rule({"targets": [], "periods": self.periods()})
+
+    def test_bad_targets_rejected(self):
+        with self.assertRaises(ValueError):
+            self.s.add_rule({"targets": 123, "periods": self.periods()})
+        with self.assertRaises(ValueError):
+            self.s.add_rule({"targets": ["A", ""], "periods": self.periods()})
+        with self.assertRaises(ValueError):
+            self.s.add_rule({"targets": "  ", "periods": self.periods()})
+
+    def test_group_flows_through_to_apply(self):
+        calls = []
+        s2 = FacilityScheduler(apply_fn=lambda t, a: calls.append((t, dict(a))),
+                               store_path=os.path.join(self.tmp.name, "s2.json"))
+        r = s2.add_rule({"targets": ["A", "B"],
+                         "periods": [{"time": "00:00", "action": {"mode": "Heat"}}]})
+        self.assertTrue(s2.apply_active_now(r["id"]))
+        self.assertEqual(calls[0][0], ["A", "B"],
+                         "the whole group must be handed to the apply function")
+
+
 class Validation(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
