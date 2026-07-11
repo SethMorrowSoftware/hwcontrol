@@ -21,7 +21,7 @@ temperature change. A simple one-time rule is just a program with a single perio
     "name": "Weekday program",
     "enabled": true,
     "days": ["mon","tue","wed","thu","fri"],   # omit/empty = every day
-    "targets": "all",                           # "all" | [deviceID, ...]
+    "targets": "all",              # "all" | "deviceID" | [deviceID, ...] (any group)
     "periods": [
       {"time": "06:00", "action": {"mode": "Heat", "heatSetpoint": 70,
                                     "coolSetpoint": 76, "thermostatSetpointStatus": "PermanentHold"}},
@@ -75,6 +75,10 @@ def _normalize(rule: dict) -> dict:
         rule["periods"] = [{"time": rule.get("time"), "action": rule.get("action", {})}]
     rule.pop("time", None)
     rule.pop("action", None)
+    # Group targets: de-dup a list while keeping order, so a zone accidentally
+    # picked twice isn't written twice per period.
+    if isinstance(rule.get("targets"), list):
+        rule["targets"] = list(dict.fromkeys(rule["targets"]))
     # Sort periods by time of day for a tidy, predictable display.
     periods = rule.get("periods") or []
     try:
@@ -220,6 +224,18 @@ class FacilityScheduler:
             bad = [d for d in days if str(d).lower() not in _DAYS]
             if bad:
                 raise ValueError(f"invalid days: {bad}")
+        # Targets: "all", one deviceID, or a group (non-empty list of deviceIDs).
+        # An empty list would make every period a silent no-op - reject it.
+        targets = rule.get("targets", "all")
+        if targets != "all":
+            if isinstance(targets, str):
+                if not targets.strip():
+                    raise ValueError("targets must be 'all', a deviceID, or a list of deviceIDs")
+            elif isinstance(targets, list):
+                if not targets or not all(isinstance(t, str) and t.strip() for t in targets):
+                    raise ValueError("targets must be a non-empty list of deviceIDs")
+            else:
+                raise ValueError("targets must be 'all', a deviceID, or a list of deviceIDs")
 
     def _trigger(self, time_str: str, days) -> CronTrigger:
         hour, minute = _valid_hhmm(time_str)
