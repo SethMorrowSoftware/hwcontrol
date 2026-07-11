@@ -279,10 +279,18 @@ a permanent hold. The only way a period hands the zone back to the onboard sched
 is to explicitly choose "Resume onboard schedule" (`NoHold`). The manual per-zone
 controls still let an operator pick any hold for one-off adjustments.
 
-**The app asserts control immediately.** When you create or edit a program — and
-once at startup, after the first poll — the app applies the program's
-currently-active period right away, so it owns the setpoints from that moment, not
-only at the next period boundary.
+**Program changes follow the schedule.** Creating, editing, enabling, or disabling
+a program updates the *plan* only — zones are never driven as a side effect of
+saving; each change takes effect at the program's scheduled period times. If you
+*do* want the period that should be in effect right now written to the zones as
+you save, tick **"Also apply the current period to the zones right now"** in the
+form (or pass `apply_now: true` to the API).
+
+Two automatic exceptions exist because they keep the schedule *accurate*: at
+**startup** (after the first poll) and **after a power-outage restore**, the app
+re-asserts every enabled program's currently-active period — both catch up
+boundaries that fired while the app was down or the outage was in progress, so
+zones aren't left at stale setpoints.
 
 **Sole Controller mode makes it automatic (on by default).** Under **Schedules →
 Control mode**, Sole Controller mode keeps *every* zone under a permanent hold

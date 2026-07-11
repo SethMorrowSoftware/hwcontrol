@@ -761,6 +761,12 @@
         <button class="btn sm" id="p-add-off">+ Turn OFF</button>
       </div>
 
+      <label style="display:flex;align-items:flex-start;gap:9px;margin:2px 0 14px;cursor:pointer;font-size:13px">
+        <input type="checkbox" id="p-applynow" style="width:16px;height:16px;accent-color:var(--accent);margin-top:2px;flex:none">
+        <span>Also apply the current period to the zones right now
+          <span class="hlp" style="display:block;margin:2px 0 0">Off (default): saving only updates the plan — zones change at the next scheduled
+          time. On: the period that should be in effect right now is also written to the zones immediately.</span></span>
+      </label>
       <div style="display:flex;gap:10px;flex-wrap:wrap">
         <button class="btn primary" id="p-save">Create program</button>
         <button class="btn ghost" id="p-cancel" hidden>Cancel edit</button>
@@ -1348,6 +1354,7 @@ async function loadSchedules(){
 function resetProgramForm(){
   editingProgram=null; selDays=new Set(); progPeriods=[];
   const nm=document.getElementById("p-name"); if(nm)nm.value="";
+  const an=document.getElementById("p-applynow"); if(an)an.checked=false;
   makePicker("p-zones"); setPicker("p-zones",[]);   // fresh form: deliberate zone choice
   document.getElementById("progFormTitle").textContent="New program";
   document.getElementById("p-save").textContent="Create program";
@@ -1382,6 +1389,9 @@ async function saveProgram(btn){
     periods.push({time:p.time,action:a});
   }
   const rule={name,days:[...selDays],targets:target,periods};
+  // Opt-in immediate write; by default a saved program only changes zones at
+  // its scheduled period times. (Popped server-side, never stored in the rule.)
+  if(document.getElementById("p-applynow")?.checked) rule.apply_now=true;
   try{
     if(editingProgram)
       await withBusy(btn,()=>api("/api/schedules/"+editingProgram,{method:"PUT",body:JSON.stringify(rule)}));
