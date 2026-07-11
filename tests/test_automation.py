@@ -172,6 +172,39 @@ class TickSerialization(unittest.TestCase):
         eng._stop_rotation("g")
 
 
+class SetActionValidation(unittest.TestCase):
+    """A 'set' with no values (or an empty target list) is a silent no-op that
+    still latches the trigger as handled - it must be rejected at save time."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.eng = make_engine(self.tmp.name, lambda t, v: [])
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def rule(self, action):
+        return {"name": "r",
+                "trigger": {"mode": "all", "conditions": [{"topic": "t", "type": "any"}]},
+                "actions": [action]}
+
+    def test_empty_or_missing_values_rejected(self):
+        with self.assertRaises(ValueError):
+            self.eng.add_rule(self.rule({"type": "set", "targets": "all", "values": {}}))
+        with self.assertRaises(ValueError):
+            self.eng.add_rule(self.rule({"type": "set", "targets": "all"}))
+
+    def test_empty_targets_rejected(self):
+        with self.assertRaises(ValueError):
+            self.eng.add_rule(self.rule({"type": "set", "targets": [],
+                                         "values": {"mode": "Off"}}))
+
+    def test_valid_set_accepted(self):
+        r = self.eng.add_rule(self.rule({"type": "set", "targets": ["Z1"],
+                                         "values": {"mode": "Off"}}))
+        self.assertTrue(r["id"])
+
+
 class TriggerEdgeSemantics(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

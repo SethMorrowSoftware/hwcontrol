@@ -330,6 +330,15 @@ class AutomationEngine:
             at = a.get("type")
             if at not in _ACTION_TYPES:
                 raise ValueError(f"unknown action type '{at}'")
+            if at == "set":
+                values = a.get("values")
+                if not isinstance(values, dict) or not values:
+                    # An empty set is a silent no-op that would still latch the
+                    # trigger as "handled" - reject it at save time instead.
+                    raise ValueError("set needs a non-empty values object "
+                                     "(mode / setpoints / hold / fan)")
+                if a.get("targets", "all") != "all" and not a.get("targets"):
+                    raise ValueError("set needs targets ('all', a deviceID, or a list)")
             if at == "rotate":
                 targets = _dedupe(self._static_targets(a.get("targets")))
                 if not a.get("targets"):

@@ -507,6 +507,12 @@ def poll_once() -> None:
             store.mark_poll(error="Poll returned no thermostats this cycle")
         elif errors:
             store.mark_poll(error="; ".join(errors))
+        elif not complete:
+            # A location with known zones reported none this cycle: reap was
+            # (rightly) skipped, but those zones are showing stale data - the
+            # poll must not read as a green "ok".
+            store.mark_poll(error="Some locations reported no thermostats this cycle; "
+                                  "their zones show last-known values")
         else:
             store.mark_poll()
 
@@ -751,10 +757,15 @@ def api_set_device(device_id: str, payload: dict = Body(...)):
             raise HTTPException(400, f"mode '{mode}' not in allowedModes {allowed}")
 
     fan_mode = payload.pop("fan", None)
-    current_cv = cached.get("changeableValues") if cached else None
-    overrides = _clamp_overrides(cached, payload)
     try:
         with _device_lock(device_id):
+            # Re-read the cache UNDER the lock (like apply_action does): a
+            # concurrent writer to the same zone (scheduler, rotation, MQTT)
+            # updates the cache when its write lands, and merging onto a
+            # snapshot taken before the lock would silently undo that write.
+            cached = store.get(device_id)
+            current_cv = cached.get("changeableValues") if cached else None
+            overrides = _clamp_overrides(cached, payload)
             if overrides:
                 client.set_thermostat(device_id, loc, overrides, current_changeable=current_cv)
                 store.apply_local_override(device_id, overrides)
@@ -945,6 +956,12 @@ def api_toggle_schedule(rule_id: str, enabled: bool = Body(..., embed=True)):
     ok = scheduler.set_enabled(rule_id, enabled)
     if not ok:
         raise HTTPException(404, "No such rule")
+    if enabled:
+        # Same as create/edit: apply the program's currently-active period now,
+        # so re-enabling takes effect immediately instead of at the next
+        # boundary (which can be hours away).
+        threading.Thread(target=scheduler.apply_active_now,
+                         args=(rule_id,), daemon=True).start()
     return {"ok": True}
 
 
