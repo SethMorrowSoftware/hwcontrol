@@ -220,6 +220,23 @@
   .card.offline{opacity:.62}
   .card.offline::before{background:var(--faint)}
   .card.dirty{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent),var(--shadow)}
+  .card.picked{border-color:var(--accent)}
+
+  /* bulk selection: per-card checkbox + floating action bar */
+  .bsel{display:grid;place-items:center;flex:none;align-self:flex-start;margin:2px 2px 0 0;cursor:pointer}
+  .bsel input{width:17px;height:17px;accent-color:var(--accent);cursor:pointer}
+  .bulkbar{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:55;
+    background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--r-lg);
+    box-shadow:var(--shadow);padding:12px 16px;display:flex;gap:12px;align-items:flex-end;
+    flex-wrap:wrap;max-width:calc(100vw - 24px)}
+  .bulkbar .bf{display:flex;flex-direction:column;gap:5px}
+  .bulkbar .mini{font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;
+    color:var(--muted);font-weight:600}
+  .bulkbar input[type=number]{width:78px}
+  .bulkbar .field.sel{position:relative}
+  @media(max-width:720px){
+    .bulkbar{left:8px;right:8px;bottom:8px;transform:none;max-width:none}
+  }
 
   .chead{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px}
   .cname{font-size:15px;font-weight:650;line-height:1.25;overflow-wrap:anywhere}
@@ -596,9 +613,26 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         <input id="zoneSearch" type="search" placeholder="Filter zones by name or ID…" aria-label="Filter zones by name or ID">
       </div>
+      <button class="btn sm" id="bulkSelectShown" title="Select every online zone currently shown (works with the filter)">Select shown</button>
       <div class="zsum" id="zoneSummary" role="status" aria-live="off"></div>
     </div>
     <div class="grid" id="zoneGrid"></div>
+
+    <!-- floating bulk-control bar: appears when one or more zones are selected -->
+    <div class="bulkbar" id="bulkBar" role="region" aria-label="Bulk zone control" hidden>
+      <div class="bf" style="justify-content:center;gap:3px">
+        <span style="font-weight:650;font-size:13px" id="bb-count">0 selected</span>
+        <button class="btn sm ghost" id="bb-clear" style="padding:3px 8px">Clear</button>
+      </div>
+      <div class="bf"><span class="mini">Mode</span><div class="field sel"><select id="bb-mode">
+        <option value="">— leave —</option><option>Heat</option><option>Cool</option><option>Auto</option><option>Off</option></select></div></div>
+      <div class="bf"><span class="mini">Heat °</span><input id="bb-heat" type="number" min="40" max="95" placeholder="—"></div>
+      <div class="bf"><span class="mini">Cool °</span><input id="bb-cool" type="number" min="40" max="95" placeholder="—"></div>
+      <div class="bf"><span class="mini">Hold</span><div class="field sel"><select id="bb-hold">
+        <option value="PermanentHold">Permanent hold</option>
+        <option value="TemporaryHold">Until next schedule</option></select></div></div>
+      <button class="btn primary" id="bb-apply">Apply to selected</button>
+    </div>
   </section>
 
   <section class="view" id="view-automations" role="tabpanel" aria-labelledby="tab-automations" tabindex="0" hidden>
@@ -828,7 +862,8 @@ const HDRS = TOKEN ? {"X-Token":TOKEN} : {};
 const qp = TOKEN ? ("?token="+encodeURIComponent(TOKEN)) : "";
 
 const state = { devices:[], pending:{}, autoStatus:{}, loaded:false, status:null,
-  soleControl:true, devicesTs:null, zoneQuery:"", alerts:[], alertFilter:"all" };
+  soleControl:true, devicesTs:null, zoneQuery:"", alerts:[], alertFilter:"all",
+  bulkSel:new Set() };
 
 /* ---------- inline icons ---------- */
 const IC = {
@@ -1107,6 +1142,66 @@ function clearZoneFilter(){
   const i=document.getElementById("zoneSearch"); if(i) i.value="";
   renderZones();
 }
+/* Devices matching the current search filter (what the grid shows). */
+function visibleDevices(){
+  const q=(state.zoneQuery||"").trim().toLowerCase();
+  return q?state.devices.filter(d=>
+    (d.name||"").toLowerCase().includes(q)||(d.deviceID||"").toLowerCase().includes(q)):state.devices;
+}
+
+/* ---------- bulk control (select zones -> one apply) ---------- */
+function toggleBulk(id,on){
+  if(on) state.bulkSel.add(id); else state.bulkSel.delete(id);
+  renderBulkBar(); renderZones();
+}
+/* Toggle-select every ONLINE zone the grid currently shows — pairs with the
+   search filter, so "filter 'arcade' → Select shown" grabs just that group. */
+function bulkSelectShown(){
+  const shown=visibleDevices().filter(d=>d.online);
+  const allSel=shown.length&&shown.every(d=>state.bulkSel.has(d.deviceID));
+  shown.forEach(d=>{ if(allSel) state.bulkSel.delete(d.deviceID); else state.bulkSel.add(d.deviceID); });
+  renderBulkBar(); renderZones();
+}
+function clearBulk(){ state.bulkSel.clear(); renderBulkBar(); renderZones(); }
+function renderBulkBar(){
+  const bar=document.getElementById("bulkBar"); if(!bar) return;
+  const n=state.bulkSel.size;
+  bar.hidden=!n;
+  const c=document.getElementById("bb-count");
+  if(c) c.textContent=n+" zone"+(n===1?"":"s")+" selected";
+}
+async function applyBulk(btn){
+  const ids=[...state.bulkSel];
+  if(!ids.length) return;
+  const values={};
+  const m=document.getElementById("bb-mode").value; if(m) values.mode=m;
+  const hv=document.getElementById("bb-heat").value;
+  const cv=document.getElementById("bb-cool").value;
+  if(hv!==""){ const h=Number(hv);
+    if(!Number.isFinite(h)||h<40||h>95){ toast("Heat setpoint must be between 40 and 95°",true); return; }
+    values.heatSetpoint=h; }
+  if(cv!==""){ const cval=Number(cv);
+    if(!Number.isFinite(cval)||cval<40||cval>95){ toast("Cool setpoint must be between 40 and 95°",true); return; }
+    values.coolSetpoint=cval; }
+  if(!values.mode&&values.heatSetpoint==null&&values.coolSetpoint==null){
+    toast("Pick a mode or a setpoint to apply",true); return; }
+  // Always ride with an explicit hold so the change sticks on every zone.
+  values.thermostatSetpointStatus=document.getElementById("bb-hold").value||"PermanentHold";
+  const what=[values.mode,values.heatSetpoint!=null?"Heat "+values.heatSetpoint+"°":null,
+    values.coolSetpoint!=null?"Cool "+values.coolSetpoint+"°":null].filter(Boolean).join(", ");
+  if(!await confirmDialog("Apply "+what+" to "+ids.length+" zone"+(ids.length===1?"":"s")+
+      "? Zones under an active outage rotation are skipped automatically.","Apply")) return;
+  try{
+    const r=await withBusy(btn,()=>api("/api/devices/set",{method:"POST",
+      body:JSON.stringify({targets:ids,values})}));
+    let msg="Applied to "+r.applied+" zone"+(r.applied===1?"":"s");
+    if(r.skipped_rotating&&r.skipped_rotating.length)
+      msg+=" · "+r.skipped_rotating.length+" skipped (outage rotation)";
+    if(r.failed&&r.failed.length) msg+=" · "+r.failed.length+" FAILED (see Alerts)";
+    toast(msg, !!(r.failed&&r.failed.length));
+    loadDevices();
+  }catch(e){ toast("Bulk apply failed: "+e.message,true); }
+}
 function renderZones(){
   const grid=document.getElementById("zoneGrid");
   document.getElementById("zoneCount").textContent = state.devices.length||"0";
@@ -1135,9 +1230,11 @@ function renderZones(){
       <div class="lede">${lede}</div></div>`;
     return;
   }
-  const q=(state.zoneQuery||"").trim().toLowerCase();
-  const shown=q?state.devices.filter(d=>
-    (d.name||"").toLowerCase().includes(q)||(d.deviceID||"").toLowerCase().includes(q)):state.devices;
+  const shown=visibleDevices();
+  const selBtn=document.getElementById("bulkSelectShown");
+  if(selBtn){ const on=shown.filter(d=>d.online);
+    selBtn.textContent=(on.length&&on.every(d=>state.bulkSel.has(d.deviceID)))
+      ?"Deselect shown":"Select shown"; }
   if(!shown.length){
     grid.innerHTML=`<div class="empty" style="grid-column:1/-1">
       <div class="e-ic">${IC.thermo}</div>
@@ -1155,7 +1252,8 @@ function renderZones(){
     const soleNo = state.soleControl;      // sole control re-holds any NoHold on next poll
     const modes = (d.allowedModes&&d.allowedModes.length)?d.allowedModes:["Heat","Cool","Off"];
     const card=document.createElement("div");
-    card.className="card "+modeClass(d)+(p.dirty.size?" dirty":"");
+    card.className="card "+modeClass(d)+(p.dirty.size?" dirty":"")
+      +(state.bulkSel.has(d.deviceID)?" picked":"");
     const temp = d.indoorTemperature!=null?Math.round(d.indoorTemperature):"–";
     const unit = (d.units||"F").charAt(0);
     const meta=[];
@@ -1173,7 +1271,8 @@ function renderZones(){
           `<button class="chip ${p.fan===f?'sel':''}" data-fan="${esc(f)}" aria-pressed="${p.fan===f}"${dis} onclick="setFan('${did}','${jsAttr(f)}')">${esc(f)}</button>`).join("")}</div></div>`:'';
     card.innerHTML = `
       <div class="chead">
-        <div><div class="cname" title="${esc(d.name)}">${esc(d.name)}</div><div class="cid">${esc(d.deviceID)}${state.devicesTs?` · <span class="stale" data-ago="${state.devicesTs}" data-prefix="as of ">as of ${esc(ago(state.devicesTs))}</span>`:''}</div></div>
+        <label class="bsel" title="Select for bulk control"><input type="checkbox"${state.bulkSel.has(d.deviceID)?' checked':''}${dis} onchange="toggleBulk('${did}',this.checked)" aria-label="Select ${esc(d.name)} for bulk control"></label>
+        <div style="flex:1;min-width:0"><div class="cname" title="${esc(d.name)}">${esc(d.name)}</div><div class="cid">${esc(d.deviceID)}${state.devicesTs?` · <span class="stale" data-ago="${state.devicesTs}" data-prefix="as of ">as of ${esc(ago(state.devicesTs))}</span>`:''}</div></div>
         <span class="badge ${d.online?'':'off'}"><span class="dot ${d.online?'on':'off'}"></span>${d.online?'ONLINE':'OFFLINE'}</span>
       </div>
       <div class="readout">
@@ -1246,6 +1345,10 @@ async function loadDevices(){
     const r=await api("/api/devices"); state.devices=r.devices||[]; state.loaded=true;
     state.devicesTs=Math.floor(Date.now()/1000);   // last-good update time for staleness
     state.fetchErr=null; updateHealthBanner();
+    // Drop bulk selections for zones that no longer exist (reaped/renamed).
+    const live=new Set(state.devices.map(d=>d.deviceID));
+    state.bulkSel=new Set([...state.bulkSel].filter(id=>live.has(id)));
+    renderBulkBar();
     renderZones();
     renderAutoStripe();   // zone names + live equipment counts may now resolve
     const sig=state.devices.map(d=>d.deviceID).sort().join("|");
@@ -1992,6 +2095,10 @@ bindRunModeToggle("a-runmode","a-run-wrap");
 document.getElementById("zoneSearch").addEventListener("input",function(){
   state.zoneQuery=this.value; renderZones();
 });
+// bulk control
+document.getElementById("bulkSelectShown").onclick=bulkSelectShown;
+document.getElementById("bb-clear").onclick=clearBulk;
+document.getElementById("bb-apply").onclick=function(){ applyBulk(this); };
 // alert severity filters (delegated — chips are re-rendered with the counts)
 document.getElementById("alertFilters").addEventListener("click",e=>{
   const b=e.target.closest(".fchip"); if(!b) return;

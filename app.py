@@ -779,6 +779,57 @@ def api_set_device(device_id: str, payload: dict = Body(...)):
     return {"ok": True, "device": d and {k: v for k, v in d.items() if k != "changeableValues"}}
 
 
+@app.post("/api/devices/set")
+def api_bulk_set(payload: dict = Body(...)):
+    """Apply one set of control values to many zones at once.
+
+    Body: {"targets": "all" | [deviceID, ...], "values": {mode / heatSetpoint /
+    coolSetpoint / thermostatSetpointStatus / fan ...}}
+
+    Zones under an active generator rotation are SKIPPED (the same guard
+    schedule periods use): a bulk write - especially a select-all - firing
+    mid-outage must not re-energize shed zones and overload the generator.
+    They're reported back so the operator sees exactly what was left alone;
+    the per-zone controls remain the deliberate single-zone override.
+
+    Returns {ok, applied, failed: [ids], skipped_rotating: [ids]}. Setpoints
+    are clamped per device and each zone's write serializes under its device
+    lock inside apply_action, exactly like scheduler/automation writes.
+    """
+    if not client.is_authorized:
+        raise HTTPException(401, "Account not authorized. Connect it first.")
+    targets = payload.get("targets")
+    values = payload.get("values") or {}
+    if targets != "all" and (not isinstance(targets, list) or not targets):
+        raise HTTPException(400, "targets must be 'all' or a non-empty list of deviceIDs")
+    unknown = sorted(k for k in values if k not in _SET_FIELDS)
+    if unknown:
+        raise HTTPException(400, f"Unknown field(s): {', '.join(unknown)}. "
+                                 f"Allowed: {', '.join(sorted(_SET_FIELDS))}")
+    if not values:
+        raise HTTPException(400, "values must include at least one control field")
+
+    ids = store.all_device_ids() if targets == "all" else list(dict.fromkeys(targets))
+    active = engine.active_rotation_targets() if engine else set()
+    skipped = sorted(d for d in ids if d in active)
+    ids = [d for d in ids if d not in active]
+    if skipped:
+        notify("warning", "bulk_skipped",
+               f"Bulk control skipped {len(skipped)} zone(s) under an active generator "
+               f"rotation: {', '.join(skipped)}. They stay under outage control.")
+
+    # refresh=False: the cache is updated locally per write and the next poll
+    # reconciles - a targeted GET per zone would burn the rate budget on bulk.
+    failed = apply_action(ids, values, refresh=False)
+    applied = len(ids) - len(failed)
+    if applied:
+        notify("info", "bulk_control",
+               f"Bulk control applied to {applied} zone(s)"
+               + (f" ({len(failed)} failed)" if failed else "") + ".")
+    return {"ok": not failed, "applied": applied,
+            "failed": failed, "skipped_rotating": skipped}
+
+
 @app.post("/api/refresh")
 def api_refresh():
     threading.Thread(target=poll_once, daemon=True).start()
