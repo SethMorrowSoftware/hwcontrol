@@ -358,6 +358,41 @@ class PollPartialHealth(unittest.TestCase):
                       "reap must be skipped for the location that went transiently empty")
 
 
+class GroupEndpoints(unittest.TestCase):
+    """The /api/groups CRUD wrappers surface store errors as HTTP 400/404."""
+
+    def setUp(self):
+        import tempfile
+        from groups import GroupStore
+        self._orig = app_mod.groups
+        self._tmp = tempfile.TemporaryDirectory()
+        app_mod.groups = GroupStore(store_path=os.path.join(self._tmp.name, "groups.json"))
+
+    def tearDown(self):
+        app_mod.groups = self._orig
+        self._tmp.cleanup()
+
+    def test_add_list_delete(self):
+        r = app_mod.api_add_group({"name": "Arcade", "members": ["TCC-1", "TCC-1", "TCC-2"]})
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["group"]["members"], ["TCC-1", "TCC-2"])
+        gid = r["group"]["id"]
+        self.assertEqual([g["name"] for g in app_mod.api_groups()["groups"]], ["Arcade"])
+        self.assertTrue(app_mod.api_delete_group(gid)["ok"])
+
+    def test_invalid_group_is_400(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            app_mod.api_add_group({"name": "", "members": []})
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_missing_group_is_404(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            app_mod.api_delete_group("nope")
+        self.assertEqual(ctx.exception.status_code, 404)
+
+
 class StoreLocationHelpers(unittest.TestCase):
     def test_device_ids_at_and_reap(self):
         s = StateStore()
