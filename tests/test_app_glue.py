@@ -261,6 +261,69 @@ class ProgramChangesFollowSchedule(unittest.TestCase):
         self.assertTrue(self.sched.asserted.wait(2))
 
 
+class BulkSetEndpoint(unittest.TestCase):
+    """Bulk control: one values object applied to many zones at once, skipping
+    zones under an active generator rotation (same guard schedule periods use,
+    so a select-all can't re-energize shed zones mid-outage)."""
+
+    def setUp(self):
+        self._orig = (app_mod.client, app_mod.engine, app_mod.apply_action,
+                      app_mod.notify, app_mod.store)
+
+        class FakeClient:
+            is_authorized = True
+        app_mod.client = FakeClient()
+        self.calls = []
+        app_mod.apply_action = (lambda t, v, refresh=True:
+                                self.calls.append((list(t), dict(v), refresh)) or [])
+        app_mod.notify = lambda *a: None
+
+    def tearDown(self):
+        (app_mod.client, app_mod.engine, app_mod.apply_action,
+         app_mod.notify, app_mod.store) = self._orig
+
+    def test_applies_to_list_deduped_without_per_zone_refresh(self):
+        app_mod.engine = FakeEngine(set())
+        r = app_mod.api_bulk_set({"targets": ["Z1", "Z2", "Z1"],
+                                  "values": {"mode": "Cool", "coolSetpoint": 74}})
+        ids, values, refresh = self.calls[0]
+        self.assertEqual(ids, ["Z1", "Z2"])
+        self.assertFalse(refresh, "bulk must not spend a targeted GET per zone")
+        self.assertEqual((r["ok"], r["applied"]), (True, 2))
+
+    def test_rotated_zones_skipped(self):
+        app_mod.engine = FakeEngine({"Z1"})
+        r = app_mod.api_bulk_set({"targets": ["Z1", "Z2"], "values": {"mode": "Heat"}})
+        self.assertEqual(self.calls[0][0], ["Z2"])
+        self.assertEqual(r["skipped_rotating"], ["Z1"])
+
+    def test_all_targets_resolve_from_store(self):
+        app_mod.engine = FakeEngine(set())
+        store = StateStore()
+        store.ingest([{"deviceID": "A", "name": "A", "isAlive": True}], 1)
+        app_mod.store = store
+        app_mod.api_bulk_set({"targets": "all", "values": {"mode": "Off"}})
+        self.assertEqual(self.calls[0][0], ["A"])
+
+    def test_failed_zones_reported(self):
+        from fastapi import HTTPException
+        app_mod.engine = FakeEngine(set())
+        app_mod.apply_action = lambda t, v, refresh=True: ["Z2"]
+        r = app_mod.api_bulk_set({"targets": ["Z1", "Z2"], "values": {"mode": "Off"}})
+        self.assertEqual((r["ok"], r["applied"], r["failed"]), (False, 1, ["Z2"]))
+
+    def test_validation(self):
+        from fastapi import HTTPException
+        app_mod.engine = FakeEngine(set())
+        for bad in ({"targets": [], "values": {"mode": "Off"}},
+                    {"targets": ["Z1"], "values": {}},
+                    {"targets": ["Z1"], "values": {"evilField": 1}},
+                    {"targets": "some-string", "values": {"mode": "Off"}}):
+            with self.assertRaises(HTTPException):
+                app_mod.api_bulk_set(bad)
+        self.assertEqual(self.calls, [], "invalid requests must not write anything")
+
+
 class PollPartialHealth(unittest.TestCase):
     """A location that transiently reports no thermostats must mark the poll
     degraded (those zones show stale data) and must not reap those zones."""

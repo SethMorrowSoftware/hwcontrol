@@ -153,6 +153,11 @@ on an air-gapped LAN) that polls the local API every ~10s. Four tabs:
   heat/cool steppers (press-and-hold to repeat), fan mode (when the device
   reports fan capability), hold selector, and Apply. Changes you're typing are
   preserved across background refreshes until you Apply or discard.
+  **Bulk control:** tick the checkbox on any cards — or use **Select shown**,
+  which pairs with the search filter ("arcade" → Select shown) — and a floating
+  bar applies one mode/setpoint/hold change to every selected zone at once
+  (`POST /api/devices/set`). Zones under an active outage rotation are skipped
+  automatically so a bulk change can't re-energize shed zones mid-outage.
 - **Automations** — the generator load-shed setup, a live status strip (active
   rotations, saved snapshots, MQTT connection), the list of rules (editable), and a
   custom multi-condition (AND/OR) rule builder. Details below.
