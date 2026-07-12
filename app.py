@@ -36,6 +36,7 @@ from fastapi.staticfiles import StaticFiles
 
 from automation import AutomationEngine
 from config import Config
+from groups import GroupStore
 from honeywell_client import HoneywellClient, HoneywellError, NotAuthorized
 from scheduler import FacilityScheduler
 from state_store import StateStore
@@ -63,6 +64,9 @@ client = HoneywellClient(
     retry_max_sleep=Config.RL_RETRY_MAX_SLEEP,
 )
 store = StateStore()
+# Named, reusable zone groups (a picker convenience; see groups.py). Loaded at
+# import so the CRUD endpoints work whether or not the account is authorized.
+groups = GroupStore()
 bridge = None          # set up in lifespan if MQTT enabled
 scheduler: Optional[FacilityScheduler] = None
 engine: Optional[AutomationEngine] = None
@@ -1019,6 +1023,43 @@ def api_toggle_schedule(rule_id: str, enabled: bool = Body(..., embed=True)):
     # period times. Startup and post-outage-restore still re-assert active
     # periods, because those catch up boundaries that fired while the app
     # was down (that's what keeps the schedule accurate).
+    return {"ok": True}
+
+
+# ---------------------------------------------------------- zone groups
+# Named, reusable sets of zones. Pure picker convenience: the dashboard expands a
+# group to concrete deviceIDs before sending them to any control/schedule
+# endpoint, so nothing here touches the schedule/rotation/apply path.
+
+@app.get("/api/groups")
+def api_groups():
+    return {"groups": groups.list_groups()}
+
+
+@app.post("/api/groups")
+def api_add_group(group: dict = Body(...)):
+    try:
+        created = groups.add(group)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"ok": True, "group": created}
+
+
+@app.put("/api/groups/{group_id}")
+def api_update_group(group_id: str, group: dict = Body(...)):
+    try:
+        updated = groups.update(group_id, group)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    if updated is None:
+        raise HTTPException(404, "No such group")
+    return {"ok": True, "group": updated}
+
+
+@app.delete("/api/groups/{group_id}")
+def api_delete_group(group_id: str):
+    if not groups.remove(group_id):
+        raise HTTPException(404, "No such group")
     return {"ok": True}
 
 

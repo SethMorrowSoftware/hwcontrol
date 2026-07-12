@@ -161,14 +161,30 @@ on an air-gapped LAN) that polls the local API every ~10s. Four tabs:
 - **Automations** — the generator load-shed setup, a live status strip (active
   rotations, saved snapshots, MQTT connection), the list of rules (editable), and a
   custom multi-condition (AND/OR) rule builder. Details below.
-- **Schedules** — daily programs: pick any group of zones (one, several, or all)
-  and days, then add timed periods (ON / OFF / temperature changes) with one-tap
-  presets. Programs are editable.
+- **Schedules** — **zone groups** (below) plus daily programs: pick any group of
+  zones (one, several, or all) and days, then add timed periods (ON / OFF /
+  temperature changes) with one-tap presets. Programs are editable.
 - **Alerts** — a feed of offline/again events, out-of-range temperatures,
   equipment faults (a zone actively heating/cooling while set to Off — checked
   against the live equipment state, debounced across two polls), and a log of
   every automation action taken, filterable by severity; the tab badge turns
   red/amber while critical/warning alerts are live.
+
+### Zone groups
+
+Name a set of zones once — e.g. **"Arcade"** for the arcade thermostats — under
+**Schedules → Zone groups**, then **quick-pick it anywhere you choose zones**: the
+bulk-control bar, a program's target picker, and the outage plan's "keep running"
+/ "can switch off" pickers all show a **Groups:** chip row. Click a chip to
+select (or clear) that group's zones in one tap.
+
+Groups are a **selection shortcut**, not a live reference: they're stored on the
+server (`/api/groups`, in `groups.json`) so they persist and are shared across
+browsers, and a selection expands to concrete zones the moment you use it. That
+means editing a group changes what it selects *next time* — it does **not**
+rewrite programs or automations you've already saved, and it never touches the
+safety-critical schedule/rotation/apply path. A member that's temporarily offline
+or missing is simply skipped when you pick the group.
 
 ### Optional access gate
 
@@ -496,6 +512,7 @@ Synchronous, thread-based, and deliberately boring for reliability:
 | `state_store.py`     | Normalizes device state, diffs polls into change events, tracks alerts. |
 | `scheduler.py`       | Application-level time-of-day schedules (APScheduler cron).          |
 | `automation.py`      | The MQTT-triggered rules engine (matching, snapshot/restore, rotation). |
+| `groups.py`          | Named, reusable zone groups (picker convenience; expanded to deviceIDs before use). |
 | `mqtt_bridge.py`     | paho-mqtt bridge: publishes state, routes command & trigger topics.  |
 | `config.py`          | Loads config from environment / `.env`.                              |
 | `authorize.py`       | Standalone CLI to complete OAuth and list devices without the server. |
@@ -506,7 +523,8 @@ Synchronous, thread-based, and deliberately boring for reliability:
 `tokens.json` (OAuth tokens), `schedules.json`, `automations.json`,
 `snapshots.json` (saved zone states for restore), `trigger_state.json` (last-seen
 trigger values, for restart-safe edge detection), `rotations.json` (active
-duty-cycle rotations, so they resume after a restart).
+duty-cycle rotations, so they resume after a restart), `groups.json` (named zone
+groups).
 
 These are written to the current working directory. A manual run keeps them next
 to the code; the systemd service (below) puts them in `/var/lib/hwcontrol` so the

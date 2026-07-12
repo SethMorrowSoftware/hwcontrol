@@ -410,6 +410,20 @@
   .picker input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent);cursor:pointer;flex:none}
   .picker.empty{color:var(--faint);font-size:12px;padding:16px;text-align:center}
 
+  /* zone-group quick-pick chips (shown above a picker / in the zones toolbar) */
+  .gchips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .gchips:not(:empty){margin:0 0 8px}
+  .gchips .glabel{font-size:11px;color:var(--faint);margin-right:2px}
+  .gchip{display:inline-flex;align-items:center;gap:6px;padding:4px 11px;cursor:pointer;
+    border-radius:var(--r-pill);border:1px solid var(--border);background:var(--surface);
+    color:var(--muted);font-size:12px;font-weight:500;white-space:nowrap;
+    transition:background .12s,border-color .12s,color .12s}
+  .gchip:hover{border-color:var(--border-strong);color:var(--text)}
+  .gchip .gn{font-family:var(--mono);font-size:11px;color:var(--faint)}
+  .gchip.on{background:color-mix(in srgb,var(--accent) 14%,transparent);
+    border-color:color-mix(in srgb,var(--accent) 45%,transparent);color:var(--accent-text);font-weight:600}
+  .gchip.on .gn{color:var(--accent-text)}
+
   /* ============================ outage-plan wizard ============================ */
   /* numbered step headers inside the generator card */
   .gstep{margin:24px 0 6px;padding-top:16px;border-top:1px solid var(--border)}
@@ -657,6 +671,7 @@
         <input id="zoneSearch" type="search" placeholder="Filter zones by name or ID…" aria-label="Filter zones by name or ID">
       </div>
       <button class="btn sm" id="bulkSelectShown" title="Select every online zone currently shown (works with the filter)">Select shown</button>
+      <div class="gchips" id="bulkGroupChips"></div>
       <div class="zsum" id="zoneSummary" role="status" aria-live="off"></div>
     </div>
     <div class="grid" id="zoneGrid"></div>
@@ -694,11 +709,13 @@
         <label>Keep these running (they take turns)</label>
         <div class="hlp">The critical zones that must stay heated/cooled — e.g. a server room, or pipes
           that could freeze. The app keeps some running and rotates so none stays off for long.</div>
+        <div class="gchips" id="rotGroupChips" data-picker="g-rotate"></div>
         <div class="picker" id="g-rotate" role="group" aria-label="Zones to keep running during an outage"></div>
       </div>
       <div class="fld full">
         <label>These can switch off</label>
         <div class="hlp">Non-critical zones that can go without during the outage — e.g. a lobby or storage room.</div>
+        <div class="gchips" id="shedGroupChips" data-picker="g-shed"></div>
         <div class="picker" id="g-shed" role="group" aria-label="Zones that can switch off during an outage"></div>
       </div>
 
@@ -812,6 +829,24 @@
 
   <section class="view" id="view-schedules" role="tabpanel" aria-labelledby="tab-schedules" tabindex="0" hidden>
     <div class="secondary-note" id="schedTz" style="margin:0 0 14px" hidden></div>
+
+    <h2 class="sectitle">Zone groups</h2>
+    <div class="card-lg">
+      <div class="desc">Name a set of zones once — e.g. “Arcade” for the arcade thermostats — then
+        quick-pick it anywhere you choose zones: bulk control, programs, and the outage plan. Editing a
+        group changes what it selects next time; it doesn't rewrite programs you've already saved.</div>
+      <div id="groupList"></div>
+      <div class="form-grid">
+        <div class="fld"><label for="grp-name">Group name</label><input id="grp-name" placeholder="Arcade" maxlength="60"></div>
+      </div>
+      <div class="fld full" style="margin-top:4px"><label>Zones in this group</label>
+        <div class="picker" id="grp-zones" role="group" aria-label="Zones in this group"></div></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">
+        <button class="btn primary" id="grp-save">Create group</button>
+        <button class="btn ghost" id="grp-cancel" hidden>Cancel edit</button>
+      </div>
+    </div>
+
     <h2 class="sectitle">Programs</h2>
     <div id="ruleList"></div>
 
@@ -824,6 +859,7 @@
         <div class="fld"><label for="p-name">Program name</label><input id="p-name" placeholder="Warehouse daily program"></div>
         <div class="fld full"><label>Apply to</label>
           <div class="hlp">Pick any set of zones — one, several, or all. The program drives every selected zone together (e.g. group the arcade zones, or the rink zones, into one program).</div>
+          <div class="gchips" id="progGroupChips" data-picker="p-zones"></div>
           <div class="picker" id="p-zones" role="group" aria-label="Zones this program applies to"></div></div>
         <div class="fld full"><label>Days (leave empty for every day)</label>
           <div class="days" id="p-days" role="group" aria-label="Days this program runs"></div></div>
@@ -909,7 +945,7 @@ const qp = TOKEN ? ("?token="+encodeURIComponent(TOKEN)) : "";
 
 const state = { devices:[], pending:{}, autoStatus:{}, loaded:false, status:null,
   soleControl:true, zoneQuery:"", alerts:[], alertFilter:"all",
-  bulkSel:new Set() };
+  bulkSel:new Set(), groups:[] };
 
 /* ---------- inline icons ---------- */
 const IC = {
@@ -1759,6 +1795,102 @@ async function restoreOnboard(id,btn){
   }catch(e){ toast("Couldn't release: "+e.message,true); }
 }
 
+/* ---------- zone groups (named, reusable zone sets) ---------- */
+let editingGroup=null;
+async function loadGroups(){
+  try{
+    const r=await api("/api/groups"); state.groups=r.groups||[];
+    renderGroupList(); renderAllGroupChips();
+  }catch(e){ /* groups are a convenience; a failed load just hides the chips */ }
+}
+function renderGroupList(){
+  const c=document.getElementById("groupList"); if(!c) return;
+  const gs=state.groups||[];
+  if(!gs.length){ c.innerHTML=`<div class="conds-empty">No groups yet — create one below to quick-pick these zones later.</div>`; return; }
+  c.innerHTML=gs.map(g=>{
+    const names=g.members.map(deviceName).map(esc).join(", ");
+    return `<div class="auto-item" style="padding:12px 14px">
+      <div class="auto-head">
+        <span class="aname">${esc(g.name)} <span style="color:var(--faint);font-weight:400;font-size:12px">· ${g.members.length} zone${g.members.length===1?'':'s'}</span></span>
+        <span class="flexspace">
+          <button class="btn sm" onclick="editGroup('${g.id}')">Edit</button>
+          <button class="btn danger sm" onclick="delGroup('${g.id}',this)" aria-label="Delete group ${esc(g.name)}">Delete</button></span></div>
+      <div class="auto-actions" style="margin-top:6px">${names}</div>
+    </div>`;
+  }).join("");
+}
+function resetGroupForm(){
+  editingGroup=null;
+  const nm=document.getElementById("grp-name"); if(nm)nm.value="";
+  makePicker("grp-zones"); setPicker("grp-zones",[]);
+  document.getElementById("grp-save").textContent="Create group";
+  document.getElementById("grp-cancel").hidden=true;
+}
+function editGroup(id){
+  const g=(state.groups||[]).find(x=>x.id===id); if(!g) return;
+  editingGroup=id;
+  document.getElementById("grp-name").value=g.name||"";
+  makePicker("grp-zones"); setPicker("grp-zones", g.members||[]);
+  document.getElementById("grp-save").textContent="Save changes";
+  document.getElementById("grp-cancel").hidden=false;
+  document.getElementById("grp-name").scrollIntoView({behavior:prefersReducedMotion()?"auto":"smooth",block:"center"});
+}
+async function saveGroup(btn){
+  const name=(document.getElementById("grp-name").value||"").trim();
+  if(!name){ toast("Give the group a name",true); return; }
+  const members=readPicker("grp-zones");
+  const ids = members==="all" ? state.devices.map(d=>d.deviceID) : members;
+  if(!ids.length){ toast("Pick at least one zone for the group",true); return; }
+  const body={name,members:ids};
+  try{
+    if(editingGroup) await withBusy(btn,()=>api("/api/groups/"+editingGroup,{method:"PUT",body:JSON.stringify(body)}));
+    else await withBusy(btn,()=>api("/api/groups",{method:"POST",body:JSON.stringify(body)}));
+    toast(editingGroup?"Group updated":"Group “"+name+"” created");
+    resetGroupForm(); loadGroups();
+  }catch(e){ toast("Couldn't save group: "+e.message,true); }
+}
+async function delGroup(id,btn){
+  const g=(state.groups||[]).find(x=>x.id===id);
+  if(!await confirmDialog("Delete the group “"+((g&&g.name)||id)+"”? This only removes the shortcut — your zones and saved programs are untouched.","Delete",true,"Delete group?")) return;
+  try{ await withBusy(btn,()=>api("/api/groups/"+id,{method:"DELETE"})); toast("Group deleted");
+    if(editingGroup===id) resetGroupForm(); loadGroups();
+  }catch(e){ toast("Couldn't delete: "+e.message,true); }
+}
+/* Quick-pick chips: one per group, rendered above each picker and in the zones
+   toolbar. Clicking toggles that group's zones in the target selection. */
+function renderAllGroupChips(){
+  document.querySelectorAll(".gchips[data-picker]").forEach(el=>renderGroupChips(el, el.dataset.picker));
+  const bulk=document.getElementById("bulkGroupChips"); if(bulk) renderGroupChips(bulk, null);
+}
+function renderGroupChips(container, pickerId){
+  const gs=state.groups||[];
+  if(!gs.length){ container.innerHTML=""; return; }
+  const handler=g=>pickerId?`toggleGroupInPicker('${jsAttr(pickerId)}','${g.id}')`:`toggleGroupInBulk('${g.id}')`;
+  container.innerHTML=`<span class="glabel">Groups:</span>`+gs.map(g=>
+    `<button type="button" class="gchip" onclick="${handler(g)}" title="${esc(g.name)}: ${esc(g.members.map(deviceName).join(', '))}">${esc(g.name)} <span class="gn">${g.members.length}</span></button>`
+  ).join("");
+}
+function toggleGroupInPicker(pickerId, groupId){
+  const g=(state.groups||[]).find(x=>x.id===groupId); if(!g) return;
+  const c=document.getElementById(pickerId); if(!c) return;
+  const boxes=[...c.querySelectorAll(".opt input")];
+  // Only members that currently exist as zones can be (un)checked.
+  const memberBoxes=g.members.map(id=>boxes.find(b=>b.value===id)).filter(Boolean);
+  if(!memberBoxes.length){ toast("None of “"+g.name+"”’s zones are available right now",true); return; }
+  const allOn=memberBoxes.every(b=>b.checked);
+  memberBoxes.forEach(b=>b.checked=!allOn);   // toggle: select the group, or clear it if fully selected
+  const sa=c.querySelector(".selall input"); if(sa) sa.checked = boxes.length>0 && boxes.every(b=>b.checked);
+  updateGeneratorPreview();   // outage pickers drive the live preview
+}
+function toggleGroupInBulk(groupId){
+  const g=(state.groups||[]).find(x=>x.id===groupId); if(!g) return;
+  const online=g.members.filter(id=>state.devices.some(d=>d.deviceID===id&&d.online));
+  if(!online.length){ toast("None of “"+g.name+"”’s zones are online",true); return; }
+  const allSel=online.every(id=>state.bulkSel.has(id));
+  online.forEach(id=>{ if(allSel) state.bulkSel.delete(id); else state.bulkSel.add(id); });
+  renderBulkBar(); renderZones();
+}
+
 /* ---------- alerts ---------- */
 async function loadAlerts(){
   try{
@@ -1843,8 +1975,10 @@ function readPicker(id){
   if(all&&all.checked) return "all";
   return [...document.querySelectorAll(`#${id} .opt input:checked`)].map(cb=>cb.value);
 }
-function populatePickers(){ makePicker("g-shed"); makePicker("g-rotate"); makePicker("p-zones");
+function populatePickers(){ makePicker("g-shed"); makePicker("g-rotate"); makePicker("p-zones"); makePicker("grp-zones");
   if(document.getElementById("a-type")) renderActionFields();
+  renderAllGroupChips();   // keep chip tooltips (zone names) in step with the device list
+  if((state.groups||[]).length) renderGroupList();   // resolve member names once devices load
   updateGeneratorPreview(); }
 
 /* ---- outage-plan live preview ---- */
@@ -2348,6 +2482,9 @@ document.getElementById("p-add-temp").onclick=()=>addPeriod("temp");
 document.getElementById("p-add-off").onclick=()=>addPeriod("off");
 document.getElementById("p-save").onclick=function(){ saveProgram(this); };
 document.getElementById("p-cancel").onclick=resetProgramForm;
+// zone groups
+document.getElementById("grp-save").onclick=function(){ saveGroup(this); };
+document.getElementById("grp-cancel").onclick=resetGroupForm;
 // automations
 document.getElementById("g-create").onclick=function(){ createGeneratorRules(this); };
 document.getElementById("c-add-cond").onclick=addCond;
@@ -2383,11 +2520,12 @@ renderZones();            // shows skeleton until first load
 renderActionFields();     // action-type dynamic fields
 resetProgramForm();       // day picker + empty periods
 resetAutoForm();          // one blank condition + empty actions
+resetGroupForm();         // zone-group form picker
 updateGeneratorPreview(); // seed the outage-plan preview + "listening" line
 tick(); setInterval(tick,15000);
-refreshStatus(); loadDevices(); loadSchedules(); loadAlerts(); loadAutomations();
+refreshStatus(); loadDevices(); loadSchedules(); loadAlerts(); loadAutomations(); loadGroups();
 setInterval(pollCycle, 10000);
-setInterval(()=>loadSchedules(true), 30000);
+setInterval(()=>{ loadSchedules(true); loadGroups(); }, 30000);
 </script>
 </body>
 </html>
