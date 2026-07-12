@@ -653,7 +653,7 @@ class AutomationEngine:
             if missing:
                 # Un-captured zones can't be restored later - make that visible now.
                 self.notify_fn("warning", "snapshot_incomplete",
-                               f"snapshot '{name}' could not capture {len(missing)} zone(s): "
+                               f"Snapshot '{name}' couldn't capture {len(missing)} zone(s): "
                                f"{','.join(sorted(missing))}")
             ok = not missing
             return f"snapshot '{name}' ({len(snap)} zone(s))" + (f", {len(missing)} MISSING" if missing else ""), ok
@@ -670,7 +670,7 @@ class AutomationEngine:
             if failed:
                 # Keep the snapshot so a re-fire can retry the zones that didn't restore.
                 self.notify_fn("critical", "restore_incomplete",
-                               f"restore '{name}': {len(failed)} zone(s) did not restore: "
+                               f"Restore '{name}' — {len(failed)} zone(s) didn't restore: "
                                f"{','.join(sorted(set(failed)))}")
                 return f"restore '{name}' ({len(snap)} zone(s), {len(failed)} FAILED)", False
             # Full success: clear the snapshot so the next outage captures fresh.

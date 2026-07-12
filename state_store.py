@@ -140,6 +140,11 @@ class StateStore:
         self._equip_mismatch: dict[str, int] = {}    # deviceID -> consecutive mismatch polls
         self._last_poll_ts: Optional[float] = None
         self._last_poll_error: Optional[str] = None
+        # Timestamp of the last SUCCESSFUL poll (no error). Distinct from
+        # _last_poll_ts, which stamps every attempt - so a failed cycle can't make
+        # the dashboard's freshness label read "just now" over data that never
+        # updated. The UI drives "Updated X ago" from this.
+        self._last_ok_poll_ts: Optional[float] = None
         # Alert thresholds (edit or drive from config). None disables that check.
         self.temp_low_alert: Optional[float] = 55.0
         self.temp_high_alert: Optional[float] = 85.0
@@ -329,12 +334,20 @@ class StateStore:
 
     def mark_poll(self, error: Optional[str] = None) -> None:
         with self._lock:
-            self._last_poll_ts = time.time()
+            now = time.time()
+            self._last_poll_ts = now
             self._last_poll_error = error
+            if error is None:
+                self._last_ok_poll_ts = now
 
     def poll_status(self) -> tuple[Optional[float], Optional[str]]:
         with self._lock:
             return self._last_poll_ts, self._last_poll_error
+
+    @property
+    def last_ok_poll_ts(self) -> Optional[float]:
+        with self._lock:
+            return self._last_ok_poll_ts
 
     # Backwards-compatible read-only properties (guarded).
     @property

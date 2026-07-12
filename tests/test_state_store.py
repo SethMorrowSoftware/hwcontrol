@@ -76,6 +76,24 @@ class CelsiusTempAlerts(unittest.TestCase):
         self.assertIn("temp_low", kinds)
 
 
+class LastOkPollTs(unittest.TestCase):
+    """The freshness label is driven by the last SUCCESSFUL poll, so a failed
+    cycle must not advance it (else the UI reads 'just now' over stale data)."""
+
+    def test_success_advances_error_does_not(self):
+        s = StateStore()
+        self.assertIsNone(s.last_ok_poll_ts)
+        s.mark_poll()                      # success
+        first = s.last_ok_poll_ts
+        self.assertIsNotNone(first)
+        s.mark_poll(error="boom")          # failed cycle
+        ts, err = s.poll_status()
+        self.assertEqual(err, "boom")
+        self.assertIsNotNone(ts)           # attempt timestamp still moves
+        self.assertEqual(s.last_ok_poll_ts, first,
+                         "a failed poll must not advance the last-successful timestamp")
+
+
 class MismatchAlert(unittest.TestCase):
     """'Set to Off but actively heating' must alert on the SECOND consecutive
     poll (one poll of grace for post-mode-change run-out), exactly once per

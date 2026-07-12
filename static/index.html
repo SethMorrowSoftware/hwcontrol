@@ -23,7 +23,11 @@
   :root{
     --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
     --mono:ui-monospace,"SF Mono","Cascadia Code","Roboto Mono",Menlo,Consolas,monospace;
-    --r-sm:8px; --r:12px; --r-lg:16px; --r-pill:999px;
+    --r-xs:6px; --r-sm:8px; --r:12px; --r-lg:16px; --r-pill:999px;
+    /* 4px spacing ramp — use instead of ad-hoc px so paddings/margins stay on-grid */
+    --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:20px; --sp-6:24px; --sp-8:32px;
+    /* one eyebrow (tiny-uppercase label) treatment shared by every small caps label */
+    --ls-eyebrow:.06em;
     --maxw:1400px;
     --heat:#f2994a; --cool:#4aa8f2; --auto:#a78bfa;
   }
@@ -32,8 +36,12 @@
     --bg:#0b1016; --inset:#090d12;
     --surface:#141c26; --surface-2:#1a2431; --surface-3:#22303f;
     --border:#27323f; --border-strong:#3b4858;
-    --text:#e8eef5; --muted:#9aa8b6; --faint:#6c7a8a;
-    --accent:#4da6f5; --accent-ink:#04233c;
+    /* --faint lightened to clear WCAG AA (4.5:1) on the card surfaces it lands on */
+    --text:#e8eef5; --muted:#9aa8b6; --faint:#8b98a8;
+    --accent:#4da6f5; --accent-ink:#04233c; --accent-text:#4da6f5;
+    /* filled-button backgrounds behind white/dark ink (kept distinct from accent text) */
+    --accent-btn:#3a93e6; --heat-btn:#e2842f;
+    --toggle-off:#3b4858;
     --heat-ink:#3a2410; --heat-soft:#382a1a; --heat-line:#7a5326;
     --cool-soft:#12314a; --cool-line:#2f6a9c;
     --auto-soft:#2a2545; --auto-line:#5b4da8;
@@ -49,8 +57,13 @@
     --bg:#eef1f5; --inset:#e7ecf2;
     --surface:#ffffff; --surface-2:#f3f6f9; --surface-3:#e9eef4;
     --border:#dce3ea; --border-strong:#c2cdd9;
-    --text:#141e28; --muted:#53616e; --faint:#83909e;
-    --accent:#1e7cd2; --accent-ink:#ffffff;
+    /* --faint darkened to clear WCAG AA on white/inset surfaces */
+    --text:#141e28; --muted:#53616e; --faint:#6b7787;
+    /* --accent darkened so it clears AA both as small text on white AND as a
+       white-ink button fill (was #1e7cd2 ≈ 4.3:1) */
+    --accent:#1668b8; --accent-ink:#ffffff; --accent-text:#1362ad;
+    --accent-btn:#1362ad; --heat-btn:#b7611c;
+    --toggle-off:#9aa7b4;
     --heat:#d9772a; --cool:#1f7fd6; --auto:#7458e6;
     --heat-ink:#ffffff; --heat-soft:#fbeadb; --heat-line:#eab98d;
     --cool-soft:#e3f0fb; --cool-line:#a8d1f2;
@@ -82,7 +95,7 @@
   .temp,.stepper .val,.count,.ts,.stat,.cid,.zs,.stat-item{font-variant-numeric:tabular-nums}
   ::selection{background:color-mix(in srgb,var(--accent) 35%,transparent)}
   *:focus{outline:none}
-  *:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+  *:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--r-xs)}
   input:focus-visible,select:focus-visible{outline:none;border-color:var(--accent)!important;
     box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}
   .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
@@ -95,7 +108,7 @@
   /* scrollbars */
   *{scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent}
   ::-webkit-scrollbar{width:10px;height:10px}
-  ::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:99px;
+  ::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:var(--r-pill);
     border:3px solid transparent;background-clip:content-box}
 
   /* ============================ header ============================ */
@@ -103,14 +116,14 @@
     backdrop-filter:blur(12px) saturate(1.25);border-bottom:1px solid var(--border)}
   .bar{display:flex;align-items:center;gap:16px;padding:12px 22px;max-width:var(--maxw);margin:0 auto}
   .brand{display:flex;align-items:center;gap:11px;margin-right:auto;min-width:0}
-  .brand .mark{width:36px;height:36px;border-radius:11px;flex:none;display:grid;place-items:center;
+  .brand .mark{width:36px;height:36px;border-radius:var(--r-sm);flex:none;display:grid;place-items:center;
     background:linear-gradient(140deg,var(--cool),var(--auto));color:#fff;
     box-shadow:var(--shadow-sm),inset 0 1px 0 rgba(255,255,255,.25)}
   .brand .mark svg{width:19px;height:19px}
   .brand .txt{min-width:0}
-  .brand h1{font-size:15.5px;font-weight:650;letter-spacing:.01em;white-space:nowrap;
+  .brand h1{font-size:16px;font-weight:600;letter-spacing:.01em;white-space:nowrap;
     overflow:hidden;text-overflow:ellipsis}
-  .brand .sub{font-size:11.5px;color:var(--muted);font-family:var(--mono)}
+  .brand .sub{font-size:11px;color:var(--muted);font-family:var(--mono)}
 
   .status{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);flex-wrap:wrap}
   .stat-item{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;
@@ -133,7 +146,7 @@
   .tabwrap{border-bottom:1px solid var(--border)}
   nav.tabs{display:flex;gap:2px;padding:0 22px;max-width:var(--maxw);margin:0 auto;overflow-x:auto}
   nav.tabs button{background:none;border:none;color:var(--muted);padding:12px 14px;cursor:pointer;
-    font-size:13.5px;font-weight:500;border-bottom:2px solid transparent;white-space:nowrap;
+    font-size:13px;font-weight:500;border-bottom:2px solid transparent;white-space:nowrap;
     display:inline-flex;align-items:center;gap:7px;transition:color .15s}
   nav.tabs button svg{width:15px;height:15px;flex:none;opacity:.7;transition:opacity .15s,color .15s}
   nav.tabs button:hover{color:var(--text)}
@@ -160,16 +173,20 @@
   .btn:hover{background:var(--surface-3);border-color:var(--border-strong)}
   .btn:active{transform:scale(.97)}
   .btn:disabled{opacity:.5;cursor:not-allowed}
-  .btn.primary{background:linear-gradient(180deg,color-mix(in srgb,var(--accent) 88%,#fff),var(--accent));
-    border-color:var(--accent);color:var(--accent-ink);font-weight:600}
-  .btn.primary:hover{background:color-mix(in srgb,var(--accent) 86%,#fff);border-color:transparent}
-  .btn.warm{background:linear-gradient(180deg,color-mix(in srgb,var(--heat) 88%,#fff),var(--heat));
-    border-color:var(--heat);color:var(--heat-ink);font-weight:600}
-  .btn.warm:hover{background:color-mix(in srgb,var(--heat) 84%,#fff)}
+  /* filled buttons use the -btn fill tokens so white/dark ink clears AA contrast */
+  .btn.primary{background:linear-gradient(180deg,color-mix(in srgb,var(--accent-btn) 92%,#fff),var(--accent-btn));
+    border-color:var(--accent-btn);color:var(--accent-ink);font-weight:600}
+  .btn.primary:hover{background:var(--accent-btn);border-color:transparent}
+  .btn.warm{background:linear-gradient(180deg,color-mix(in srgb,var(--heat-btn) 92%,#fff),var(--heat-btn));
+    border-color:var(--heat-btn);color:var(--heat-ink);font-weight:600}
+  .btn.warm:hover{background:var(--heat-btn)}
   .btn.ghost{background:transparent}
   .btn.ghost:hover{background:var(--surface-2)}
   .btn.danger{background:transparent;border-color:transparent;color:var(--crit);padding:8px 10px}
   .btn.danger:hover{background:var(--crit-soft);border-color:color-mix(in srgb,var(--crit) 35%,transparent)}
+  /* solid destructive button for the primary action of a delete confirmation */
+  .btn.danger-solid{background:var(--crit);border-color:var(--crit);color:#fff;font-weight:600}
+  .btn.danger-solid:hover{background:color-mix(in srgb,var(--crit) 88%,#000);border-color:transparent}
   .btn.sm{padding:6px 10px;font-size:12px}
   .btn svg{width:15px;height:15px;flex:none}
   .btn[aria-busy="true"]{pointer-events:none}
@@ -183,10 +200,10 @@
   .banner{display:flex;align-items:center;gap:16px;background:var(--surface);
     border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:var(--r);
     padding:15px 18px;margin-bottom:20px;box-shadow:var(--shadow-sm)}
-  .banner .b-ic{width:34px;height:34px;border-radius:9px;flex:none;display:grid;place-items:center;
+  .banner .b-ic{width:34px;height:34px;border-radius:var(--r-sm);flex:none;display:grid;place-items:center;
     background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent)}
   .banner .b-ic svg{width:18px;height:18px}
-  .banner .b-title{font-weight:650;margin-bottom:2px}
+  .banner .b-title{font-weight:600;margin-bottom:2px}
   .banner .b-sub{color:var(--muted);font-size:13px}
 
   /* ============================ zones toolbar ============================ */
@@ -203,7 +220,7 @@
     font-size:12px;color:var(--muted)}
   .zs{display:inline-flex;align-items:center;gap:6px;padding:5px 11px;white-space:nowrap;
     border-radius:var(--r-pill);background:var(--surface);border:1px solid var(--border)}
-  .zs b{color:var(--text);font-weight:650}
+  .zs b{color:var(--text);font-weight:600}
   .zs .sw{width:8px;height:8px;border-radius:3px;flex:none}
   .zs.plain{border:none;background:none;padding:5px 2px;color:var(--faint)}
 
@@ -217,42 +234,53 @@
   .card.mode-heat::before{background:var(--heat)}
   .card.mode-cool::before{background:var(--cool)}
   .card.mode-auto::before{background:var(--auto)}
-  .card.offline{opacity:.62}
+  /* Offline: dim only the (disabled) controls, keep the last-known readings and
+     header at full opacity so they stay legible (they're still information). */
+  .card.offline .modes,.card.offline .sp,.card.offline .fanrow,
+  .card.offline .field,.card.offline .apply{opacity:.5}
   .card.offline::before{background:var(--faint)}
   .card.dirty{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent),var(--shadow)}
   .card.picked{border-color:var(--accent)}
 
   /* bulk selection: per-card checkbox + floating action bar */
-  .bsel{display:grid;place-items:center;flex:none;align-self:flex-start;margin:2px 2px 0 0;cursor:pointer}
+  /* 44px hit area (negative margins reclaim the layout space so the header
+     doesn't shift); the box itself stays visually put via place-items:center. */
+  .bsel{display:grid;place-items:center;flex:none;align-self:flex-start;
+    min-width:44px;min-height:44px;margin:-12px -10px -12px -8px;cursor:pointer}
   .bsel input{width:17px;height:17px;accent-color:var(--accent);cursor:pointer}
   .bulkbar{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:55;
     background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--r-lg);
     box-shadow:var(--shadow);padding:12px 16px;display:flex;gap:12px;align-items:flex-end;
     flex-wrap:wrap;max-width:calc(100vw - 24px)}
   .bulkbar .bf{display:flex;flex-direction:column;gap:5px}
-  .bulkbar .mini{font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;
+  .bulkbar .mini{font-size:11px;letter-spacing:var(--ls-eyebrow);text-transform:uppercase;
     color:var(--muted);font-weight:600}
   .bulkbar input[type=number]{width:78px}
   .bulkbar .field.sel{position:relative}
-  @media(max-width:720px){
-    .bulkbar{left:8px;right:8px;bottom:8px;transform:none;max-width:none}
-  }
+  /* count/Clear column: intentionally anchored differently from the input columns,
+     via a class rather than per-element inline styles */
+  .bulkbar .bf.head{justify-content:center;gap:4px}
+  .bulkbar .count-lbl{font-size:13px;font-weight:600}
+  /* When the bar is open, reserve scroll room so it never hides the last cards,
+     and lift the toast above it (bar height measured into --bulk-h by JS). */
+  body.bulk-open main{padding-bottom:calc(var(--bulk-h,96px) + 28px)}
+  body.bulk-open .toast{bottom:calc(var(--bulk-h,96px) + 30px)}
 
   .chead{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px}
-  .cname{font-size:15px;font-weight:650;line-height:1.25;overflow-wrap:anywhere}
-  .cid{font-size:11px;color:var(--faint);font-family:var(--mono);margin-top:2px}
-  .badge{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:600;
+  .cname{font-size:15px;font-weight:600;line-height:1.25;overflow-wrap:anywhere}
+  .cid{font-size:11px;color:var(--faint);font-family:var(--mono);margin-top:2px;overflow-wrap:anywhere}
+  .badge{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;
     font-family:var(--mono);letter-spacing:.03em;padding:3px 8px;border-radius:var(--r-pill);
     background:var(--ok-soft);color:var(--ok);white-space:nowrap;flex:none}
   .badge.off{background:var(--crit-soft);color:var(--crit)}
 
   .readout{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin:4px 0 15px}
-  .temp{font-family:var(--mono);font-size:46px;font-weight:650;line-height:.9;letter-spacing:-.02em}
+  .temp{font-family:var(--mono);font-size:46px;font-weight:600;line-height:.9;letter-spacing:-.02em}
   .temp .u{font-size:18px;color:var(--muted);font-weight:400;margin-left:1px}
   /* what the zone is doing right now: live "Heating to 66°" (pulsing) when the
      device reports equipment state, "Idle · Heat 66°" while holding, or the
      commanded target on models that don't report it */
-  .zstate{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;font-weight:600;
+  .zstate{display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:600;
     margin-top:9px;padding:3px 10px;border-radius:var(--r-pill);white-space:nowrap;
     border:1px solid var(--border);background:var(--surface-2);color:var(--muted);cursor:default}
   .zstate.heat{background:var(--heat-soft);border-color:var(--heat-line);color:var(--heat)}
@@ -277,8 +305,8 @@
 
   .modes{display:flex;gap:0;margin-bottom:14px;background:var(--inset);border:1px solid var(--border);
     border-radius:var(--r-sm);padding:3px}
-  .chip{flex:1;background:none;border:none;color:var(--muted);padding:6px 4px;border-radius:6px;
-    font-size:12.5px;font-weight:600;cursor:pointer;transition:background .12s,color .12s}
+  .chip{flex:1;background:none;border:none;color:var(--muted);padding:6px 4px;border-radius:var(--r-xs);
+    font-size:12px;font-weight:600;cursor:pointer;transition:background .12s,color .12s}
   .chip:hover{color:var(--text)}
   .chip.sel[data-mode="Heat"]{background:var(--heat-soft);color:var(--heat)}
   .chip.sel[data-mode="Cool"]{background:var(--cool-soft);color:var(--cool)}
@@ -287,27 +315,27 @@
 
   .sp{display:flex;gap:12px;margin-bottom:13px}
   .spbox{flex:1;background:var(--inset);border:1px solid var(--border);border-radius:var(--r-sm);padding:9px 11px}
-  .spbox .lbl{font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);
+  .spbox .lbl{font-size:11px;letter-spacing:var(--ls-eyebrow);text-transform:uppercase;color:var(--muted);
     display:flex;align-items:center;gap:6px;font-weight:600}
   .spbox .lbl::before{content:"";width:7px;height:7px;border-radius:50%}
   .spbox.heat .lbl::before{background:var(--heat)}
   .spbox.cool .lbl::before{background:var(--cool)}
   .stepper{display:flex;align-items:center;justify-content:space-between;margin-top:6px}
-  .stepper button{width:30px;height:30px;border-radius:7px;border:1px solid var(--border);
+  .stepper button{width:30px;height:30px;border-radius:var(--r-xs);border:1px solid var(--border);
     background:var(--surface-2);color:var(--text);font-size:17px;cursor:pointer;line-height:1;
     display:grid;place-items:center;transition:background .12s,border-color .12s;
     touch-action:manipulation;user-select:none;-webkit-user-select:none}
   .stepper button:hover{background:var(--surface-3);border-color:var(--border-strong)}
   .stepper button:active{background:var(--surface-3);transform:scale(.95)}
   .stepper button:disabled{opacity:.4;cursor:not-allowed}
-  .stepper .val{font-family:var(--mono);font-size:21px;font-weight:650}
+  .stepper .val{font-family:var(--mono);font-size:21px;font-weight:600}
 
   /* per-zone fan mode (only shown when the device reports fan capability) */
   .fanrow{display:flex;align-items:center;gap:10px;margin-bottom:13px}
-  .fanrow .fanlbl{font-size:10px;letter-spacing:.09em;text-transform:uppercase;
+  .fanrow .fanlbl{font-size:11px;letter-spacing:var(--ls-eyebrow);text-transform:uppercase;
     color:var(--muted);font-weight:600;flex:none}
   .fanrow .modes{flex:1;margin-bottom:0;padding:2px}
-  .fanrow .chip{padding:4px 4px;font-size:11.5px}
+  .fanrow .chip{padding:4px 4px;font-size:11px}
   .chip.sel[data-fan]{background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent)}
 
   /* small advisory line inside a card (unsaved edits, sole-control notes) */
@@ -331,7 +359,7 @@
   .card-lg{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);
     padding:20px;margin-bottom:18px;box-shadow:var(--shadow-sm)}
   .card-lg.accent{border-top:3px solid var(--heat)}
-  .card-lg h3{font-size:15.5px;font-weight:650;margin-bottom:5px;display:flex;align-items:center;gap:9px}
+  .card-lg h3{font-size:16px;font-weight:600;margin-bottom:5px;display:flex;align-items:center;gap:9px}
   /* fields placed directly in a card (the wizard's zone pickers) need their own
      spacing — they don't get the form-grid's gap */
   .card-lg>.fld{margin-bottom:16px}
@@ -360,39 +388,43 @@
   .days .d:hover{border-color:var(--border-strong);color:var(--text)}
   .days .d.on{background:var(--cool-soft);border-color:var(--cool-line);color:var(--cool);font-weight:600}
 
-  /* toggle switch */
-  .toggle{width:40px;height:23px;border-radius:var(--r-pill);background:var(--border-strong);
+  /* toggle switch. Off-track uses a themed token so the white knob stays visible
+     in light mode (was --border-strong, ~1.6:1 vs the #fff knob). */
+  .toggle{width:40px;height:23px;border-radius:var(--r-pill);background:var(--toggle-off);
     position:relative;cursor:pointer;border:none;flex:none;transition:background .18s}
   .toggle.on{background:var(--ok)}
   .toggle::after{content:"";position:absolute;top:2.5px;left:2.5px;width:18px;height:18px;
-    border-radius:50%;background:#fff;box-shadow:var(--shadow-sm);transition:left .18s}
+    border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.35);transition:left .18s}
   .toggle.on::after{left:19.5px}
+  /* transparent overlay enlarges the tap target to ~62x45px without changing looks */
+  .toggle::before{content:"";position:absolute;inset:-11px}
 
   /* pickers */
   .picker{background:var(--inset);border:1px solid var(--border);border-radius:var(--r-sm);padding:8px;
     max-height:180px;overflow:auto}
   .picker .selall{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--muted);
     padding:5px 4px 8px;margin-bottom:6px;border-bottom:1px solid var(--border);font-weight:600}
-  .picker .opt{display:flex;align-items:center;gap:9px;font-size:13px;padding:5px 4px;border-radius:6px;cursor:pointer}
+  .picker .opt{display:flex;align-items:center;gap:9px;font-size:13px;padding:5px 4px;border-radius:var(--r-xs);cursor:pointer}
   .picker .opt:hover{background:var(--surface-2)}
   .picker .opt .cid{color:var(--faint);font-family:var(--mono);font-size:11px;margin-left:auto}
   .picker input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent);cursor:pointer;flex:none}
-  .picker.empty{color:var(--faint);font-size:12.5px;padding:16px;text-align:center}
+  .picker.empty{color:var(--faint);font-size:12px;padding:16px;text-align:center}
 
   /* ============================ outage-plan wizard ============================ */
   /* numbered step headers inside the generator card */
   .gstep{margin:24px 0 6px;padding-top:16px;border-top:1px solid var(--border)}
   .gstep:first-of-type{border-top:none;padding-top:4px;margin-top:6px}
   .gstep .n{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--heat);font-weight:700}
-  .gstep .t{font-size:14.5px;font-weight:650;margin-top:3px}
+  .gstep .t{font-size:14px;font-weight:600;margin-top:3px}
   /* generous helper text under a label/field */
   .hlp{font-size:12px;color:var(--muted);line-height:1.5;max-width:74ch;margin:4px 0 10px}
   .hlp:last-child{margin-bottom:0}
   .hlp code,.gnote code,.gprev code,.glisten code{font-family:var(--mono);font-size:.9em;
-    background:var(--surface-2);border:1px solid var(--border);border-radius:5px;padding:1px 5px;color:var(--text)}
-  .glisten{font-size:12.5px;color:var(--muted);margin:4px 0 10px;line-height:1.6}
+    background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-xs);padding:1px 5px;
+    color:var(--text);overflow-wrap:anywhere}
+  .glisten{font-size:12px;color:var(--muted);margin:4px 0 10px;line-height:1.6}
   /* highlighted advisory note (retained-message / installer tip) */
-  .gnote{font-size:12.5px;color:var(--muted);background:var(--warn-soft);border:1px solid var(--warn);
+  .gnote{font-size:12px;color:var(--muted);background:var(--warn-soft);border:1px solid var(--warn);
     border-radius:var(--r-sm);padding:10px 12px;margin:12px 0 4px;line-height:1.6}
   .gnote b{color:var(--text)}
   .gnote code{background:var(--surface);border-color:var(--border-strong)}
@@ -400,51 +432,52 @@
   .gprev{background:var(--surface-2);border:1px solid var(--border);border-left:3px solid var(--heat);
     border-radius:var(--r-sm);padding:13px 15px;margin:8px 0 14px;font-size:13px;line-height:1.7}
   .gprev .pline{display:block;margin:2px 0}
-  .gprev .pk{color:var(--heat);font-weight:800;margin-right:6px}
-  .gprev b{color:var(--text);font-weight:650}
+  .gprev .pk{color:var(--heat);font-weight:700;margin-right:6px}
+  .gprev b{color:var(--text);font-weight:600}
   .gprev .muted{color:var(--faint)}
   /* inline validation hint beside the create button */
-  .ghint{font-size:12.5px;color:var(--crit);margin-top:9px;line-height:1.5;max-width:74ch}
+  .ghint{font-size:12px;color:var(--crit);margin-top:9px;line-height:1.5;max-width:74ch}
   .ghint:empty{display:none}
   /* little "?" help chip next to a jargon label */
   .help{display:inline-grid;place-items:center;width:15px;height:15px;border-radius:50%;
     border:1px solid var(--border-strong);color:var(--muted);font-size:10px;font-weight:700;line-height:1;
     cursor:help;margin-left:5px;vertical-align:middle;font-family:var(--sans)}
   /* one-line "this is the advanced path" note above the custom builder */
-  .secondary-note{font-size:12.5px;color:var(--muted);margin:6px 0 2px;max-width:72ch;line-height:1.5}
+  .secondary-note{font-size:12px;color:var(--muted);margin:6px 0 2px;max-width:72ch;line-height:1.5}
 
   /* ============================ rules / automations lists ============================ */
-  .sectitle{font-size:11.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);
-    margin:26px 0 12px;font-weight:600}
+  .sectitle{font-size:11px;letter-spacing:var(--ls-eyebrow);text-transform:uppercase;color:var(--muted);
+    margin:24px 0 12px;font-weight:600}
   .sectitle:first-child{margin-top:0}
   .rule,.auto-item{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
     box-shadow:var(--shadow-sm);margin-bottom:10px}
   .rule{display:flex;align-items:center;gap:16px;padding:14px 16px}
-  .rule .when{font-family:var(--mono);font-size:12.5px;color:var(--accent);min-width:145px;font-weight:500}
+  .rule .when{font-family:var(--mono);font-size:12px;color:var(--accent-text);min-width:145px;font-weight:500;overflow-wrap:anywhere}
   .rule .what{font-size:13px;color:var(--muted);flex:1;overflow-wrap:anywhere}
-  .rule .rname{font-weight:650;color:var(--text)}
+  .rule .rname{font-weight:600;color:var(--text)}
   .auto-item{padding:15px 16px}
   .auto-item.disabled{opacity:.6}
   .auto-head{display:flex;align-items:center;gap:13px}
-  .auto-head .aname{font-weight:650;overflow-wrap:anywhere}
+  .auto-head .aname{font-weight:600;overflow-wrap:anywhere}
   .flexspace{margin-left:auto;display:flex;gap:8px;flex:none}
-  .auto-trigger{font-family:var(--mono);font-size:12px;color:var(--accent);margin-top:10px}
+  .auto-trigger{font-family:var(--mono);font-size:12px;color:var(--accent-text);margin-top:10px;
+    overflow-wrap:anywhere;min-width:0}
   .auto-trigger b{color:var(--text)}
-  .auto-actions{font-size:12.5px;color:var(--muted);margin-top:8px;line-height:1.9}
-  .tag{font-family:var(--mono);font-size:10.5px;padding:2px 8px;border-radius:5px;
+  .auto-actions{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.6}
+  .tag{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:var(--r-xs);
     background:var(--surface-2);color:var(--muted);margin-right:7px;font-weight:600}
   .actrow{display:flex;align-items:center;gap:11px;background:var(--inset);border:1px solid var(--border);
     border-radius:var(--r-sm);padding:9px 12px;margin-bottom:8px;font-size:13px}
   .actrow .body{flex:1;color:var(--muted);overflow-wrap:anywhere}
   .actrow .x{cursor:pointer;color:var(--faint);border:none;background:none;font-size:15px;
-    width:26px;height:26px;border-radius:6px;flex:none;display:grid;place-items:center}
+    width:26px;height:26px;border-radius:var(--r-xs);flex:none;display:grid;place-items:center}
   .actrow .x:hover{color:var(--crit);background:var(--crit-soft)}
 
   .stripe{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:20px}
-  .stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);
-    padding:9px 13px;font-size:12px;color:var(--muted);display:inline-flex;align-items:center;gap:8px;
+  .stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-pill);
+    padding:9px 14px;font-size:12px;color:var(--muted);display:inline-flex;align-items:center;gap:8px;
     box-shadow:var(--shadow-sm)}
-  .stat b{color:var(--text);font-weight:650}
+  .stat b{color:var(--text);font-weight:600}
   .stat.live{border-color:var(--heat-line);background:var(--heat-soft)}
   .stat.live b{color:var(--heat)}
   .stat.warnbox{border-color:var(--warn);background:var(--warn-soft);color:var(--text)}
@@ -462,7 +495,7 @@
   .filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
   .fchip{display:inline-flex;align-items:center;gap:7px;padding:6px 13px;cursor:pointer;
     border-radius:var(--r-pill);border:1px solid var(--border);background:var(--surface);
-    color:var(--muted);font-size:12.5px;font-weight:500;
+    color:var(--muted);font-size:12px;font-weight:500;
     transition:background .12s,border-color .12s,color .12s}
   .fchip:hover{border-color:var(--border-strong);color:var(--text)}
   .fchip.on{background:color-mix(in srgb,var(--accent) 14%,transparent);
@@ -477,7 +510,7 @@
   .alert.critical{border-left-color:var(--crit)}
   .alert.warning{border-left-color:var(--warn)}
   .alert.info{border-left-color:var(--accent)}
-  .alert .a-ic{width:28px;height:28px;border-radius:8px;flex:none;display:grid;place-items:center}
+  .alert .a-ic{width:28px;height:28px;border-radius:var(--r-sm);flex:none;display:grid;place-items:center}
   .alert .a-ic svg{width:16px;height:16px}
   .alert.critical .a-ic{background:var(--crit-soft);color:var(--crit)}
   .alert.warning .a-ic{background:var(--warn-soft);color:var(--warn)}
@@ -487,10 +520,10 @@
 
   /* ============================ empty & skeleton ============================ */
   .empty{text-align:center;color:var(--muted);padding:56px 20px;font-size:14px}
-  .empty .e-ic{width:52px;height:52px;border-radius:14px;margin:0 auto 14px;display:grid;
+  .empty .e-ic{width:52px;height:52px;border-radius:var(--r);margin:0 auto 14px;display:grid;
     place-items:center;background:var(--surface-2);color:var(--faint)}
   .empty .e-ic svg{width:26px;height:26px}
-  .empty .big{font-size:16px;color:var(--text);margin-bottom:6px;font-weight:650}
+  .empty .big{font-size:16px;color:var(--text);margin-bottom:6px;font-weight:600}
   .empty .lede{max-width:44ch;margin:0 auto}
   .skel{position:relative;overflow:hidden;background:var(--surface);border:1px solid var(--border);
     border-radius:var(--r-lg);height:250px}
@@ -515,8 +548,8 @@
     border-radius:var(--r-lg);padding:0;max-width:420px;width:calc(100vw - 32px);box-shadow:var(--shadow)}
   dialog::backdrop{background:var(--scrim);backdrop-filter:blur(2px)}
   .dlg-body{padding:22px 22px 8px}
-  .dlg-body h3{font-size:16px;font-weight:650;margin-bottom:8px}
-  .dlg-body p{color:var(--muted);font-size:13.5px;margin:0}
+  .dlg-body h3{font-size:16px;font-weight:600;margin-bottom:8px}
+  .dlg-body p{color:var(--muted);font-size:13px;margin:0}
   .dlg-foot{display:flex;justify-content:flex-end;gap:10px;padding:16px 22px 20px}
 
   /* ============================ builder rows (programs & conditions) ==== */
@@ -524,17 +557,17 @@
     border:1px solid var(--border);border-radius:var(--r-sm);padding:12px;margin-bottom:10px}
   .brow .f{flex:1 1 110px;min-width:0}
   .brow .f.grow{flex:2 1 190px}
-  .brow .mini{font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);
+  .brow .mini{font-size:11px;letter-spacing:var(--ls-eyebrow);text-transform:uppercase;color:var(--muted);
     display:block;margin-bottom:5px;font-weight:600}
   .brow .rm{flex:0 0 auto;align-self:flex-end;height:38px}
   .brow input:disabled{opacity:.45}
   .preset-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:2px 0 14px}
   .preset-row .lbl{font-size:12px;color:var(--muted);margin-right:2px}
-  .periods-empty,.conds-empty{color:var(--faint);font-size:12.5px;padding:14px;
+  .periods-empty,.conds-empty{color:var(--faint);font-size:12px;padding:14px;
     border:1px dashed var(--border);border-radius:var(--r-sm);text-align:center;margin-bottom:12px}
   .prog-periods{margin-top:10px;display:flex;flex-wrap:wrap;gap:6px}
   .prog-periods .pp{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:var(--r-pill);
-    background:var(--inset);border:1px solid var(--border);font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+    background:var(--inset);border:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
   .prog-periods .pp b{color:var(--accent);font-weight:600}
 
   /* ============================ responsive ============================ */
@@ -552,9 +585,19 @@
     .rule .what{flex-basis:100%;order:3}
     .searchwrap{flex:1 1 100%}
     .zsum{margin-left:0}
-    /* comfortable touch targets for the setpoint steppers */
-    .stepper button{width:40px;height:40px;border-radius:9px}
+    /* comfortable touch targets for the setpoint steppers, mode/fan chips, day chips */
+    .stepper button{width:40px;height:40px;border-radius:var(--r-sm)}
+    .modes .chip{padding:10px 4px}
+    .fanrow .chip{padding:9px 4px}
+    .days .d{padding:10px 14px}
     .card:hover{transform:none}
+    /* 16px inputs prevent iOS Safari's zoom-on-focus (native selects don't zoom).
+       .searchwrap needs the explicit selector to beat its own 13px rule above. */
+    input[type=text],input[type=number],input[type=time],input[type=search],
+    input:not([type]),.searchwrap input[type=search]{font-size:16px}
+    /* full-width floating bulk bar, clearing the iOS home indicator */
+    .bulkbar{left:8px;right:8px;bottom:calc(8px + env(safe-area-inset-bottom));
+      transform:none;max-width:none}
   }
   @media(prefers-reduced-motion:reduce){
     *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;
@@ -580,8 +623,8 @@
     <div class="status" role="status" aria-live="off">
       <span class="conn" id="connState"><span class="dot off"></span>Offline — reconnecting…</span>
       <span class="stat-item" title="Honeywell account connection"><span class="dot" id="authDot"></span><span id="authText">checking…</span></span>
-      <span class="stat-item" title="MQTT broker link (feeds automations)"><span class="dot" id="mqttDot"></span>MQTT</span>
-      <span class="stat-item" title="Last update from the Honeywell API" id="pollText">—</span>
+      <span class="stat-item" id="mqttStat" title="Automation link (MQTT broker that powers automations and outage plans)"><span class="dot" id="mqttDot"></span><span id="mqttText">Automations</span></span>
+      <span class="stat-item" title="Last update from the Honeywell account" id="pollText">—</span>
     </div>
 
     <div class="actions">
@@ -603,9 +646,9 @@
   </div>
 </header>
 
-<main id="main">
-  <div id="authBanner"></div>
-  <div id="pollBanner"></div>
+<main id="main" tabindex="-1">
+  <div id="authBanner" role="status"></div>
+  <div id="pollBanner" role="alert"></div>
 
   <section class="view active" id="view-zones" role="tabpanel" aria-labelledby="tab-zones" tabindex="0">
     <div class="toolbar" id="zoneToolbar" hidden>
@@ -620,17 +663,17 @@
 
     <!-- floating bulk-control bar: appears when one or more zones are selected -->
     <div class="bulkbar" id="bulkBar" role="region" aria-label="Bulk zone control" hidden>
-      <div class="bf" style="justify-content:center;gap:3px">
-        <span style="font-weight:650;font-size:13px" id="bb-count">0 selected</span>
-        <button class="btn sm ghost" id="bb-clear" style="padding:3px 8px">Clear</button>
+      <div class="bf head">
+        <span class="count-lbl" id="bb-count">0 selected</span>
+        <button class="btn sm ghost" id="bb-clear">Clear</button>
       </div>
-      <div class="bf"><span class="mini">Mode</span><div class="field sel"><select id="bb-mode">
+      <div class="bf"><span class="mini">Mode</span><div class="field sel"><select id="bb-mode" aria-label="Bulk mode">
         <option value="">— leave —</option><option>Heat</option><option>Cool</option><option>Auto</option><option>Off</option></select></div></div>
-      <div class="bf"><span class="mini">Heat °</span><input id="bb-heat" type="number" min="40" max="95" placeholder="—"></div>
-      <div class="bf"><span class="mini">Cool °</span><input id="bb-cool" type="number" min="40" max="95" placeholder="—"></div>
-      <div class="bf"><span class="mini">Hold</span><div class="field sel"><select id="bb-hold">
+      <div class="bf"><span class="mini">Heat °</span><input id="bb-heat" type="number" min="40" max="95" placeholder="—" aria-label="Bulk heat setpoint"></div>
+      <div class="bf"><span class="mini">Cool °</span><input id="bb-cool" type="number" min="40" max="95" placeholder="—" aria-label="Bulk cool setpoint"></div>
+      <div class="bf"><span class="mini">Hold</span><div class="field sel"><select id="bb-hold" aria-label="Bulk hold">
         <option value="PermanentHold">Permanent hold</option>
-        <option value="TemporaryHold">Until next schedule</option></select></div></div>
+        <option value="TemporaryHold">Hold until next schedule</option></select></div></div>
       <button class="btn primary" id="bb-apply">Apply to selected</button>
     </div>
   </section>
@@ -640,7 +683,7 @@
 
     <div class="card-lg accent" id="g-card">
       <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Power-outage plan (generator)</h3>
-      <div class="desc">During an outage your generator can't run every unit at once without overloading.
+      <div class="desc">During an outage your generator can't run every zone at once without overloading.
         Set this up once and the app handles it automatically: the zones you choose switch off, the
         important ones take turns so they stay conditioned, and when normal power returns every zone
         goes back exactly as it was and your daily programs resume immediately.</div>
@@ -651,25 +694,25 @@
         <label>Keep these running (they take turns)</label>
         <div class="hlp">The critical zones that must stay heated/cooled — e.g. a server room, or pipes
           that could freeze. The app keeps some running and rotates so none stays off for long.</div>
-        <div class="picker" id="g-rotate"></div>
+        <div class="picker" id="g-rotate" role="group" aria-label="Zones to keep running during an outage"></div>
       </div>
       <div class="fld full">
         <label>These can switch off</label>
         <div class="hlp">Non-critical zones that can go without during the outage — e.g. a lobby or storage room.</div>
-        <div class="picker" id="g-shed"></div>
+        <div class="picker" id="g-shed" role="group" aria-label="Zones that can switch off during an outage"></div>
       </div>
 
       <!-- Step 2 — how the "keep running" zones share the generator -->
-      <div class="gstep"><div class="n">Step 2</div><div class="t">How should the 'keep running' zones share the generator?</div></div>
+      <div class="gstep"><div class="n">Step 2</div><div class="t">How should the “keep running” zones share the generator?</div></div>
       <div class="form-grid">
         <div class="fld"><label for="g-runmode">Sharing method</label>
           <div class="field sel"><select id="g-runmode">
             <option value="half">Half on / half off (recommended)</option>
-            <option value="count">A set number of units</option>
+            <option value="count">A set number of zones</option>
           </select></div>
           <div class="hlp">Half is the safe default — half your critical zones run while the other half rest, then they swap.</div>
         </div>
-        <div class="fld" id="g-run-wrap"><label for="g-run">How many units run at once</label>
+        <div class="fld" id="g-run-wrap"><label for="g-run">How many zones run at once</label>
           <input id="g-run" type="number" min="1" value="2">
           <div class="hlp">The others switch off and wait for their turn.</div></div>
         <div class="fld"><label for="g-int">Swap every … minutes</label>
@@ -686,7 +729,7 @@
           <input id="g-heat" type="number" value="66"></div>
         <div class="fld"><label for="g-cool">Hold Cool …° while a zone is running</label>
           <input id="g-cool" type="number" value="80">
-          <div class="hlp">The temperature to maintain during a zone's 'on' turn.</div></div>
+          <div class="hlp">The temperature to maintain during a zone's “on” turn.</div></div>
       </div>
 
       <!-- Step 3 — how the app detects the generator -->
@@ -722,12 +765,12 @@
       </div>
     </div>
 
-    <div class="sectitle">Active automations</div>
+    <h2 class="sectitle">Active automations</h2>
     <div id="autoList"></div>
 
     <div class="secondary-note">Most setups only need the outage plan above. This is for advanced custom
       triggers (react to any MQTT message).</div>
-    <details class="adv">
+    <details class="adv" id="customRuleBuilder">
       <summary>Build a custom rule — react to any MQTT message</summary>
       <div class="card-lg">
         <div class="desc">Watch one or more topics on your broker and run actions when the
@@ -742,11 +785,11 @@
             <option value="every_message">on every matching message</option></select></div></div>
         </div>
 
-        <div class="sectitle" style="margin-top:18px">Conditions</div>
+        <h2 class="sectitle" style="margin-top:18px">Conditions</h2>
         <div id="c-conditions"></div>
         <div class="preset-row"><button class="btn sm" id="c-add-cond">+ Add condition</button></div>
 
-        <div class="sectitle" style="margin-top:6px">Actions</div>
+        <h2 class="sectitle" style="margin-top:6px">Actions</h2>
         <div id="c-actions"></div>
         <div class="form-grid" style="margin-top:6px">
           <div class="fld"><label for="a-type">Action type</label><div class="field sel"><select id="a-type" onchange="renderActionFields()">
@@ -757,7 +800,7 @@
             <option value="stop_rotation">Stop a rotation</option></select></div></div>
           <div class="fld" id="a-dynamic-1"></div>
           <div class="fld full" id="a-dynamic-2"></div>
-          <div class="fld full"><button class="btn" id="a-add">Add action</button></div>
+          <div class="fld full"><button class="btn" id="a-add">+ Add action</button></div>
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:4px">
           <button class="btn primary" id="c-create">Create automation</button>
@@ -769,24 +812,24 @@
 
   <section class="view" id="view-schedules" role="tabpanel" aria-labelledby="tab-schedules" tabindex="0" hidden>
     <div class="secondary-note" id="schedTz" style="margin:0 0 14px" hidden></div>
-    <div class="sectitle">Programs</div>
+    <h2 class="sectitle">Programs</h2>
     <div id="ruleList"></div>
 
-    <div class="sectitle" id="progFormTitle">New program</div>
+    <h2 class="sectitle" id="progFormTitle">New program</h2>
     <div class="card-lg">
-      <div class="desc">A program applies to one target on the days you pick. Add as many
+      <div class="desc">A program controls the zones you choose, on the days you pick. Add as many
         timed periods as you like — a "Turn ON" or temperature change in the morning, a
         "Turn OFF" at night, setbacks midday, and so on.</div>
       <div class="form-grid">
         <div class="fld"><label for="p-name">Program name</label><input id="p-name" placeholder="Warehouse daily program"></div>
         <div class="fld full"><label>Apply to</label>
-          <div class="hlp">Pick any set of zones — one, several, or all. The program drives every selected zone together (e.g. group the arcade units, or the rink units, into one program).</div>
-          <div class="picker" id="p-zones"></div></div>
+          <div class="hlp">Pick any set of zones — one, several, or all. The program drives every selected zone together (e.g. group the arcade zones, or the rink zones, into one program).</div>
+          <div class="picker" id="p-zones" role="group" aria-label="Zones this program applies to"></div></div>
         <div class="fld full"><label>Days (leave empty for every day)</label>
-          <div class="days" id="p-days"></div></div>
+          <div class="days" id="p-days" role="group" aria-label="Days this program runs"></div></div>
       </div>
 
-      <div class="sectitle" style="margin-top:18px">Periods</div>
+      <h2 class="sectitle" style="margin-top:18px">Periods</h2>
       <div id="p-periods"></div>
       <div class="preset-row">
         <span class="lbl">Add a period:</span>
@@ -807,12 +850,12 @@
       </div>
     </div>
 
-    <div class="sectitle">Control mode</div>
+    <h2 class="sectitle">Control mode</h2>
     <div class="card-lg">
       <div class="brow" style="align-items:center;gap:12px;margin-bottom:6px">
         <button class="toggle" id="soleToggle" role="switch" aria-checked="false" aria-label="Sole Controller mode" onclick="toggleSoleControl()"></button>
         <div class="f grow" style="flex:3 1 240px">
-          <div style="font-weight:650">Sole Controller mode</div>
+          <div style="font-weight:600">Sole Controller mode</div>
           <div class="desc" id="soleDesc" style="margin:2px 0 0">Loading…</div>
         </div>
       </div>
@@ -827,15 +870,18 @@
 </main>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
+<!-- assertive channel for error toasts; polite channel for setpoint-stepper values -->
+<div id="a11yAssertive" class="sr-only" role="alert" aria-live="assertive"></div>
+<div id="spAnnounce" class="sr-only" aria-live="polite"></div>
 
-<dialog id="confirmDlg" aria-labelledby="confirmTitle">
+<dialog id="confirmDlg" aria-labelledby="confirmTitle" aria-describedby="confirmMsg">
   <div class="dlg-body">
-    <h3 id="confirmTitle">Are you sure?</h3>
+    <h3 id="confirmTitle">Please confirm</h3>
     <p id="confirmMsg"></p>
   </div>
   <div class="dlg-foot">
     <button class="btn ghost" data-act="cancel">Cancel</button>
-    <button class="btn danger" data-act="ok" style="border:1px solid var(--crit)">Delete</button>
+    <button class="btn danger-solid" data-act="ok">Delete</button>
   </div>
 </dialog>
 
@@ -862,7 +908,7 @@ const HDRS = TOKEN ? {"X-Token":TOKEN} : {};
 const qp = TOKEN ? ("?token="+encodeURIComponent(TOKEN)) : "";
 
 const state = { devices:[], pending:{}, autoStatus:{}, loaded:false, status:null,
-  soleControl:true, devicesTs:null, zoneQuery:"", alerts:[], alertFilter:"all",
+  soleControl:true, zoneQuery:"", alerts:[], alertFilter:"all",
   bulkSel:new Set() };
 
 /* ---------- inline icons ---------- */
@@ -934,7 +980,14 @@ function toast(msg, err=false){
   t.innerHTML=`<span class="t-ic">${err?IC.err:IC.ok}</span><span>${esc(msg)}</span>`;
   t.className="toast show "+(err?"err":"ok");
   clearTimeout(toast._t); toast._t=setTimeout(()=>t.className="toast",3000);
+  // Errors are the messages an AT user most needs; announce them assertively
+  // (the visible toast's polite region can be pre-empted by a following toast).
+  if(err){ const a=document.getElementById("a11yAssertive"); if(a) a.textContent=msg; }
 }
+/* Announce setpoint-stepper changes to assistive tech (the value span is static). */
+function announce(msg){ const el=document.getElementById("spAnnounce"); if(el) el.textContent=msg; }
+/* JS-driven smooth scrolling can't be caught by the CSS reduced-motion block. */
+function prefersReducedMotion(){ try{ return matchMedia("(prefers-reduced-motion: reduce)").matches; }catch(e){ return false; } }
 /* Run an async action with a spinner on the triggering button. */
 async function withBusy(btn, fn){
   if(!btn) return fn();
@@ -942,10 +995,23 @@ async function withBusy(btn, fn){
   try{ return await fn(); }
   finally{ btn.disabled=false; btn.removeAttribute("aria-busy"); }
 }
+/* Fine-grained relative time — used only for the Alerts feed, where a recent
+   event's exact age is meaningful. Clamped so server/browser clock skew can't
+   render a negative "-3s ago". */
 function ago(ts){ if(!ts) return "never";
   const s=Math.floor(Date.now()/1000-ts);
+  if(s<0) return "just now";
   if(s<60) return s+"s ago"; if(s<3600) return Math.floor(s/60)+"m ago";
   return Math.floor(s/3600)+"h ago"; }
+/* Coarse relative time for data-freshness labels. The thermostats are only
+   polled every few minutes, so sub-minute precision is false precision — this
+   reads "just now" under ~75s, then whole minutes/hours, and never counts
+   second-by-second. Also clamps negative (clock skew) to "just now". */
+function agoCoarse(ts){ if(!ts) return "never";
+  const s=Math.floor(Date.now()/1000-ts);
+  if(s<75) return "just now";
+  if(s<3600) return Math.round(s/60)+" min ago";
+  return Math.round(s/3600)+" hr ago"; }
 /* Escape values that come from device names, alerts, or operator-typed rules/topics. */
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,
   c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
@@ -964,12 +1030,18 @@ function toggleTheme(){
   paintThemeBtn();
 }
 
-/* ---------- confirm dialog ---------- */
-function confirmDialog(msg, okLabel="Delete"){
+/* ---------- confirm dialog ----------
+   okLabel: primary button text. danger: true = destructive (solid red button),
+   false = benign (solid accent). title: heading; defaults to the action label. */
+function confirmDialog(msg, okLabel="Delete", danger=true, title=""){
   const d=document.getElementById("confirmDlg");
   if(!d || !d.showModal) return Promise.resolve(window.confirm(msg));
+  if(d.open) return Promise.resolve(false);   // don't re-open (throws) or clobber the in-flight one
+  document.getElementById("confirmTitle").textContent = title || okLabel;
   document.getElementById("confirmMsg").textContent=msg;
-  const okb=d.querySelector('[data-act="ok"]'); okb.textContent=okLabel;
+  const okb=d.querySelector('[data-act="ok"]');
+  okb.textContent=okLabel;
+  okb.className = danger ? "btn danger-solid" : "btn primary";
   return new Promise(res=>{
     const done=v=>{ okb.onclick=null; d.querySelector('[data-act="cancel"]').onclick=null;
       d.oncancel=null; try{d.close();}catch(e){} res(v); };
@@ -991,8 +1063,16 @@ async function refreshStatus(){
     a.className="dot "+(s.authorized?"on":"off");
     at.textContent = s.authorized ? "Connected" : "Not connected";
     document.getElementById("mqttDot").className="dot "+(s.mqtt_connected?"on":"");
-    document.getElementById("pollText").textContent =
-      "Polled "+ago(s.last_poll_ts)+(s.last_poll_error?" · error":"");
+    // Plain-language + accessible MQTT state (the dot alone isn't enough for AT).
+    const mqttStat=document.getElementById("mqttStat");
+    if(mqttStat) mqttStat.setAttribute("aria-label",
+      "Automation link "+(s.mqtt_connected?"connected":"disconnected"));
+    // Freshness reads from the last SUCCESSFUL update (server time), coarse-grained,
+    // so it climbs calmly to the poll interval instead of resetting every browser
+    // fetch. A failed cycle shows the failure, not a false "just now".
+    document.getElementById("pollText").textContent = s.last_poll_error
+      ? "Last update failed"
+      : "Updated "+agoCoarse(s.last_ok_poll_ts||s.last_poll_ts);
     // Keep the zones empty state self-diagnosing as status arrives.
     if(state.loaded && !state.devices.length) renderZones();
     document.getElementById("authBanner").innerHTML = s.authorized ? "" :
@@ -1016,12 +1096,12 @@ function controlSource(d){
   const s = d.setpointStatus;
   if(s==="PermanentHold") return {t:"App control", cls:"src-app",
     tip:"The app owns this zone (permanent hold). Its schedules and automations drive the setpoints; the thermostat's onboard/Resideo schedule is suspended."};
-  if(s==="TemporaryHold") return {t:"App hold (temp)", cls:"src-temp",
+  if(s==="TemporaryHold") return {t:"App hold (temporary)", cls:"src-temp",
     tip:"A temporary app hold is active until the next schedule period, then the onboard/Resideo schedule resumes."};
   if(s==="HoldUntil") return {t:"App hold (timed)", cls:"src-temp",
     tip:"A timed app hold is active until a set time, then the onboard/Resideo schedule resumes."};
   if(s==="NoHold") return {t:"Resideo schedule", cls:"src-onboard",
-    tip:"This zone is following its own onboard/Resideo 7-day schedule — the app is not holding it. With Sole Controller on, the next poll takes it back under app control."};
+    tip:"This zone is following its own onboard/Resideo 7-day schedule — the app is not holding it. With Sole Controller on, the next update takes it back under app control."};
   // Hold status not reported: fall back to the raw Resideo scheduleStatus if present.
   if(d.scheduleStatus) return {t:"Sched: "+d.scheduleStatus, cls:"",
     tip:"Thermostat-reported scheduleStatus (hold status unavailable)."};
@@ -1046,15 +1126,32 @@ function ensurePending(d){
   return p;
 }
 function clamp(v,lo,hi){ if(lo!=null&&v<lo)v=lo; if(hi!=null&&v>hi)v=hi; return v; }
-function step(id,key,delta){
-  const p=state.pending[id]; if(!p) return; if(p[key]==null)p[key]=70;
+// Heat and cool must keep a 2° deadband (heat < cool); Resideo rejects a crossed
+// pair on Auto with an opaque 502. Clamp the setpoint being moved so it can't
+// cross the other one, rather than letting the steppers pass through each other.
+const DEADBAND=2;
+function stepMutate(id,key,delta){
+  const p=state.pending[id]; if(!p) return false; if(p[key]==null)p[key]=70;
   const d=state.devices.find(x=>x.deviceID===id)||{};
   let lo = key==="heat"?d.minHeatSetpoint:d.minCoolSetpoint;
   let hi = key==="heat"?d.maxHeatSetpoint:d.maxCoolSetpoint;
-  // Absolute fallback bounds so steppers stay bounded when the device reports no min/max.
-  if(lo==null) lo=40; if(hi==null) hi=95;
-  p[key]=clamp(Math.round(p[key]+delta),lo,hi);
-  p.dirty.add(key); renderZones();
+  if(lo==null) lo=40; if(hi==null) hi=95;   // fallback bounds when device reports none
+  let v=clamp(Math.round(p[key]+delta),lo,hi);
+  if(key==="heat" && p.cool!=null) v=Math.min(v, p.cool-DEADBAND);
+  if(key==="cool" && p.heat!=null) v=Math.max(v, p.heat+DEADBAND);
+  p[key]=v; p.dirty.add(key);
+  announce((key==="heat"?"Heat":"Cool")+" setpoint for "+deviceName(id)+": "+v+"°");
+  return true;
+}
+function step(id,key,delta){ if(stepMutate(id,key,delta)) renderZones(); }
+// In-place variant for press-and-hold repeats: update just this card's value +
+// dirty marker so a held button doesn't rebuild the whole grid ~9×/second.
+function stepHold(id,key,delta){
+  if(!stepMutate(id,key,delta)) return;
+  const p=state.pending[id];
+  const val=document.querySelector(`.val[data-valfor="${(window.CSS&&CSS.escape)?CSS.escape(id):id}:${key}"]`);
+  if(val) val.textContent=(p[key]!=null?p[key]:"–")+"°";
+  if(val){ const card=val.closest(".card"); if(card) card.classList.add("dirty"); }
 }
 function setMode(id,m){ const p=state.pending[id]; if(!p) return; p.mode=m; p.dirty.add("mode"); renderZones(); }
 function setHold(id,v){ const p=state.pending[id]; if(!p) return; p.hold=v; p.dirty.add("hold"); renderZones(); }
@@ -1077,9 +1174,19 @@ async function applyZone(id,btn){
   // the same thing adjusting the dial on the thermostat itself does.
   if((body.mode||body.heatSetpoint!=null||body.coolSetpoint!=null)&&!body.thermostatSetpointStatus)
     body.thermostatSetpointStatus=(p.hold&&p.hold!=="NoHold")?p.hold:"TemporaryHold";
+  // Snapshot exactly what we're sending, keyed by the pending field, so we can
+  // clear only those dirty flags afterward — an edit made DURING the in-flight
+  // write keeps its dirty flag and isn't reverted by the reload.
+  const sent={};
+  if("mode" in body) sent.mode=p.mode;
+  if("heatSetpoint" in body) sent.heat=p.heat;
+  if("coolSetpoint" in body) sent.cool=p.cool;
+  if("thermostatSetpointStatus" in body && p.dirty.has("hold")) sent.hold=p.hold;
+  if("fan" in body) sent.fan=p.fan;
   try{
     await withBusy(btn,()=>api("/api/devices/"+id+"/set",{method:"POST",body:JSON.stringify(body)}));
-    p.dirty.clear(); toast("Applied to "+deviceName(id)); loadDevices();
+    for(const k in sent){ if(p[k]===sent[k]) p.dirty.delete(k); }
+    toast("Applied to "+deviceName(id)); loadDevices();
   }catch(e){ toast("Couldn't apply: "+e.message,true); }
 }
 function resetZone(id){ delete state.pending[id]; renderZones(); }
@@ -1134,7 +1241,10 @@ function renderZoneSummary(){
     const c=ds.filter(d=>(d.mode||"").toLowerCase()===k).length;
     if(c) bits.push(`<span class="zs" title="${c} zone${c===1?'':'s'} set to ${label}"><span class="sw" style="background:var(${v})"></span><b>${c}</b>&nbsp;${label}</span>`);
   }
-  if(state.devicesTs) bits.push(`<span class="zs plain" data-ago="${state.devicesTs}" data-prefix="updated ">updated ${esc(ago(state.devicesTs))}</span>`);
+  // One freshness chip, from the last SUCCESSFUL Honeywell update (server time),
+  // coarse-grained so it doesn't tick second-by-second or reset every browser fetch.
+  const okTs=(state.status||{}).last_ok_poll_ts||(state.status||{}).last_poll_ts;
+  if(okTs) bits.push(`<span class="zs plain" data-ago="${okTs}" data-coarse="1" data-prefix="updated ">updated ${esc(agoCoarse(okTs))}</span>`);
   sum.innerHTML=bits.join("");
 }
 function clearZoneFilter(){
@@ -1162,13 +1272,26 @@ function bulkSelectShown(){
   shown.forEach(d=>{ if(allSel) state.bulkSel.delete(d.deviceID); else state.bulkSel.add(d.deviceID); });
   renderBulkBar(); renderZones();
 }
-function clearBulk(){ state.bulkSel.clear(); renderBulkBar(); renderZones(); }
+function resetBulkFields(){
+  ["bb-mode","bb-heat","bb-cool"].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=""; });
+}
+function clearBulk(){ state.bulkSel.clear(); resetBulkFields(); renderBulkBar(); renderZones(); }
 function renderBulkBar(){
   const bar=document.getElementById("bulkBar"); if(!bar) return;
   const n=state.bulkSel.size;
   bar.hidden=!n;
   const c=document.getElementById("bb-count");
-  if(c) c.textContent=n+" zone"+(n===1?"":"s")+" selected";
+  if(c){
+    // Flag any selected zones the current filter is hiding, so a bulk apply is
+    // never a surprise ("2 hidden by filter").
+    const visible=new Set(visibleDevices().map(d=>d.deviceID));
+    const hidden=[...state.bulkSel].filter(id=>!visible.has(id)).length;
+    c.textContent=n+" zone"+(n===1?"":"s")+" selected"+(hidden?" · "+hidden+" hidden by filter":"");
+  }
+  // Reserve scroll room and lift the toast: measure the (wrapping) bar height and
+  // expose it so the CSS can pad the page bottom and raise the toast above it.
+  document.body.classList.toggle("bulk-open", n>0);
+  if(n>0) document.body.style.setProperty("--bulk-h", bar.offsetHeight+"px");
 }
 async function applyBulk(btn){
   const ids=[...state.bulkSel];
@@ -1185,24 +1308,49 @@ async function applyBulk(btn){
     values.coolSetpoint=cval; }
   if(!values.mode&&values.heatSetpoint==null&&values.coolSetpoint==null){
     toast("Pick a mode or a setpoint to apply",true); return; }
+  // Keep the heat/cool deadband (heat < cool) — a crossed pair is rejected by Resideo.
+  if(values.heatSetpoint!=null&&values.coolSetpoint!=null&&values.coolSetpoint<values.heatSetpoint+DEADBAND){
+    toast("Cool must be at least "+DEADBAND+"° above Heat",true); return; }
   // Always ride with an explicit hold so the change sticks on every zone.
   values.thermostatSetpointStatus=document.getElementById("bb-hold").value||"PermanentHold";
   const what=[values.mode,values.heatSetpoint!=null?"Heat "+values.heatSetpoint+"°":null,
     values.coolSetpoint!=null?"Cool "+values.coolSetpoint+"°":null].filter(Boolean).join(", ");
+  // Name the zones (a few, then "+N more") so the operator sees exactly what changes,
+  // including any hidden by the filter.
+  const names=ids.map(deviceName);
+  const shownNames=names.slice(0,6).join(", ")+(names.length>6?" +"+(names.length-6)+" more":"");
   if(!await confirmDialog("Apply "+what+" to "+ids.length+" zone"+(ids.length===1?"":"s")+
-      "? Zones under an active outage rotation are skipped automatically.","Apply")) return;
+      " ("+shownNames+")? Zones under an active outage rotation are skipped automatically.",
+      "Apply", false, "Apply to "+ids.length+" zone"+(ids.length===1?"":"s")+"?")) return;
   try{
     const r=await withBusy(btn,()=>api("/api/devices/set",{method:"POST",
       body:JSON.stringify({targets:ids,values})}));
     let msg="Applied to "+r.applied+" zone"+(r.applied===1?"":"s");
     if(r.skipped_rotating&&r.skipped_rotating.length)
       msg+=" · "+r.skipped_rotating.length+" skipped (outage rotation)";
-    if(r.failed&&r.failed.length) msg+=" · "+r.failed.length+" FAILED (see Alerts)";
+    if(r.failed&&r.failed.length) msg+=" · "+r.failed.length+" failed (see Alerts)";
     toast(msg, !!(r.failed&&r.failed.length));
+    // Clear the selection and the fields so the bar closes to a clean end state
+    // (no leftover setpoints silently re-applied to the next group).
+    state.bulkSel.clear(); resetBulkFields(); renderBulkBar();
     loadDevices();
   }catch(e){ toast("Bulk apply failed: "+e.message,true); }
 }
-function renderZones(){
+/* A signature of everything that affects the rendered cards. When a background
+   poll produces the same signature, the grid isn't rebuilt — so an open Hold
+   dropdown, a focused stepper, or an in-flight Apply spinner survives the poll. */
+function zoneSig(shown){
+  return JSON.stringify((shown||[]).map(d=>{
+    const p=state.pending[d.deviceID]||{};
+    return [d.deviceID,d.name,d.online,d.indoorTemperature,d.indoorHumidity,d.outdoorTemperature,
+      d.mode,d.heatSetpoint,d.coolSetpoint,d.setpointStatus,d.equipmentStatus,
+      d.fanMode,d.fanRunning,d.fanRequest,d.circulationFanRequest,
+      (d.allowedModes||[]).join(","),(d.allowedFanModes||[]).join(","),
+      p.mode,p.heat,p.cool,p.hold,p.fan,p.dirty?[...p.dirty].sort().join(","):"",
+      state.bulkSel.has(d.deviceID)];
+  }))+"|"+state.soleControl+"|"+state.zoneQuery;
+}
+function renderZones(fromPoll){
   const grid=document.getElementById("zoneGrid");
   document.getElementById("zoneCount").textContent = state.devices.length||"0";
   renderZoneSummary();
@@ -1210,19 +1358,19 @@ function renderZones(){
   if(!state.devices.length){
     const s=state.status||{};
     let big="No thermostats yet",
-        lede="Once the account is connected and the first poll runs, your zones appear here.";
+        lede="Once the account is connected and the first update runs, your zones appear here.";
     if(s.authorized===false){
       big="Account not connected";
       lede="Connect your Honeywell account with the button above to load your zones.";
     }else if(s.last_poll_error){
       const rate=/429|rate/i.test(s.last_poll_error);
-      big=rate?"Rate limited by Honeywell":"Last poll failed";
+      big=rate?"Rate limited by Honeywell":"Last update failed";
       lede=(rate
         ? "Honeywell's API is temporarily throttling this account. Zones return automatically once the limit clears — no restart needed. "
         : "")+"Details: "+esc(s.last_poll_error);
     }else if(s.last_poll_ts){
       big="No thermostats found";
-      lede="The account is connected and polling succeeded, but no thermostats were returned for it.";
+      lede="The account is connected and the update succeeded, but no thermostats were returned for it.";
     }
     grid.innerHTML = `<div class="empty" style="grid-column:1/-1">
       <div class="e-ic">${IC.thermo}</div>
@@ -1233,8 +1381,9 @@ function renderZones(){
   const shown=visibleDevices();
   const selBtn=document.getElementById("bulkSelectShown");
   if(selBtn){ const on=shown.filter(d=>d.online);
-    selBtn.textContent=(on.length&&on.every(d=>state.bulkSel.has(d.deviceID)))
-      ?"Deselect shown":"Select shown"; }
+    const allSel=on.length&&on.every(d=>state.bulkSel.has(d.deviceID));
+    selBtn.textContent=allSel?"Deselect shown":"Select shown";
+    selBtn.title=(allSel?"Deselect":"Select")+" every online zone currently shown (works with the filter)"; }
   if(!shown.length){
     grid.innerHTML=`<div class="empty" style="grid-column:1/-1">
       <div class="e-ic">${IC.thermo}</div>
@@ -1243,6 +1392,16 @@ function renderZones(){
       <div style="margin-top:14px"><button class="btn sm" onclick="clearZoneFilter()">Clear filter</button></div></div>`;
     return;
   }
+  // On a background poll, don't rebuild if nothing render-relevant changed, or if
+  // the operator is actively interacting with a control in the grid.
+  const sig=zoneSig(shown);
+  if(fromPoll && (sig===state._zoneSig || grid.contains(document.activeElement))) return;
+  state._zoneSig=sig;
+  // Preserve keyboard focus on a stepper across a rebuild (continuous keyboard stepping).
+  const ae=document.activeElement;
+  let refocus=null;
+  if(ae&&ae.classList&&ae.classList.contains("stepbtn")&&grid.contains(ae))
+    refocus={did:ae.dataset.did,key:ae.dataset.key,delta:ae.dataset.delta};
   grid.innerHTML="";
   for(const d of shown){
     const p=ensurePending(d);
@@ -1271,8 +1430,8 @@ function renderZones(){
           `<button class="chip ${p.fan===f?'sel':''}" data-fan="${esc(f)}" aria-pressed="${p.fan===f}"${dis} onclick="setFan('${did}','${jsAttr(f)}')">${esc(f)}</button>`).join("")}</div></div>`:'';
     card.innerHTML = `
       <div class="chead">
-        <label class="bsel" title="Select for bulk control"><input type="checkbox"${state.bulkSel.has(d.deviceID)?' checked':''}${dis} onchange="toggleBulk('${did}',this.checked)" aria-label="Select ${esc(d.name)} for bulk control"></label>
-        <div style="flex:1;min-width:0"><div class="cname" title="${esc(d.name)}">${esc(d.name)}</div><div class="cid">${esc(d.deviceID)}${state.devicesTs?` · <span class="stale" data-ago="${state.devicesTs}" data-prefix="as of ">as of ${esc(ago(state.devicesTs))}</span>`:''}</div></div>
+        <label class="bsel" title="Select for bulk control"><input type="checkbox"${state.bulkSel.has(d.deviceID)?' checked':''} onchange="toggleBulk('${did}',this.checked)" aria-label="Select ${esc(d.name)} for bulk control"></label>
+        <div style="flex:1;min-width:0"><div class="cname" title="${esc(d.name)}">${esc(d.name)}</div><div class="cid">${esc(d.deviceID)}</div></div>
         <span class="badge ${d.online?'':'off'}"><span class="dot ${d.online?'on':'off'}"></span>${d.online?'ONLINE':'OFFLINE'}</span>
       </div>
       <div class="readout">
@@ -1286,14 +1445,14 @@ function renderZones(){
         `<button class="chip ${p.mode===m?'sel':''}" data-mode="${esc(m)}" aria-pressed="${p.mode===m}"${dis} onclick="setMode('${did}','${jsAttr(m)}')">${esc(m)}</button>`).join("")}</div>
       <div class="sp">
         <div class="spbox heat"><div class="lbl">Heat</div>
-          <div class="stepper">
+          <div class="stepper" role="group" aria-label="Heat setpoint for ${esc(d.name)}">
             <button class="stepbtn" data-did="${esc(d.deviceID)}" data-key="heat" data-delta="-1" aria-label="Lower heat setpoint"${dis}>−</button>
-            <span class="val">${p.heat!=null?p.heat:'–'}°</span>
+            <span class="val" data-valfor="${esc(d.deviceID)}:heat">${p.heat!=null?p.heat:'–'}°</span>
             <button class="stepbtn" data-did="${esc(d.deviceID)}" data-key="heat" data-delta="1" aria-label="Raise heat setpoint"${dis}>+</button></div></div>
         <div class="spbox cool"><div class="lbl">Cool</div>
-          <div class="stepper">
+          <div class="stepper" role="group" aria-label="Cool setpoint for ${esc(d.name)}">
             <button class="stepbtn" data-did="${esc(d.deviceID)}" data-key="cool" data-delta="-1" aria-label="Lower cool setpoint"${dis}>−</button>
-            <span class="val">${p.cool!=null?p.cool:'–'}°</span>
+            <span class="val" data-valfor="${esc(d.deviceID)}:cool">${p.cool!=null?p.cool:'–'}°</span>
             <button class="stepbtn" data-did="${esc(d.deviceID)}" data-key="cool" data-delta="1" aria-label="Raise cool setpoint"${dis}>+</button></div></div>
       </div>
       ${fanRow}
@@ -1304,13 +1463,17 @@ function renderZones(){
           <option value="NoHold" ${p.hold==='NoHold'?'selected':''}${soleNo?' disabled':''}>Resume schedule${soleNo?' (sole control on)':''}</option>
         </select>
       </div>
-      ${soleNo?`<div class="cardnote">Sole Controller is on — “Resume schedule” is re-asserted as a hold on the next poll.</div>`:''}
+      ${(soleNo&&p.hold==='NoHold')?`<div class="cardnote">Sole Controller is on — “Resume schedule” is re-applied as a hold on the next update.</div>`:''}
       ${p.dirty.size?`<div class="cardnote accent">Edited — changes are not sent until you Apply.</div>`:''}
       <div class="apply">
-        <button class="btn ${modeClass(d)==='mode-heat'?'warm':'primary'}"${dis} onclick="applyZone('${did}',this)">Apply changes</button>
+        <button class="btn primary"${(off||!p.dirty.size)?' disabled':''} onclick="applyZone('${did}',this)">Apply changes</button>
         ${p.dirty.size?`<button class="btn ghost" onclick="resetZone('${did}')">Reset</button>`:''}
       </div>`;
     grid.appendChild(card);
+  }
+  if(refocus){
+    const sel=`.stepbtn[data-did="${(window.CSS&&CSS.escape)?CSS.escape(refocus.did):refocus.did}"][data-key="${refocus.key}"][data-delta="${refocus.delta}"]`;
+    const btn=grid.querySelector(sel); if(btn&&!btn.disabled) btn.focus();
   }
 }
 
@@ -1325,15 +1488,17 @@ function renderZones(){
   grid.addEventListener("pointerdown",e=>{
     const b=e.target.closest(".stepbtn"); if(!b||b.disabled) return;
     const did=b.dataset.did, key=b.dataset.key, delta=Number(b.dataset.delta);
-    stop(); step(did,key,delta);
+    stop(); step(did,key,delta);     // first press: full render (shows Edited/Reset)
     let reps=0;
     t=setTimeout(()=>{ iv=setInterval(()=>{
-      step(did,key,delta);
+      stepHold(did,key,delta);       // repeats: cheap in-place value update
       if(++reps>60) stop();          // safety cap if a release event is ever missed
     },110); },450);
   });
-  ["pointerup","pointercancel"].forEach(ev=>window.addEventListener(ev,stop));
-  window.addEventListener("blur",stop);
+  // On release, reconcile the card once so Apply/Reset reflect the held run.
+  const stopAndSync=()=>{ const wasHeld=!!iv; stop(); if(wasHeld) renderZones(); };
+  ["pointerup","pointercancel"].forEach(ev=>window.addEventListener(ev,stopAndSync));
+  window.addEventListener("blur",stopAndSync);
   grid.addEventListener("click",e=>{
     const b=e.target.closest(".stepbtn"); if(!b||b.disabled) return;
     if(e.detail===0) step(b.dataset.did,b.dataset.key,Number(b.dataset.delta));
@@ -1343,13 +1508,13 @@ function renderZones(){
 async function loadDevices(){
   try{
     const r=await api("/api/devices"); state.devices=r.devices||[]; state.loaded=true;
-    state.devicesTs=Math.floor(Date.now()/1000);   // last-good update time for staleness
     state.fetchErr=null; updateHealthBanner();
-    // Drop bulk selections for zones that no longer exist (reaped/renamed).
-    const live=new Set(state.devices.map(d=>d.deviceID));
-    state.bulkSel=new Set([...state.bulkSel].filter(id=>live.has(id)));
+    // Keep bulk selection only for zones still present AND online (an offline zone
+    // can't be controlled; leaving it selected just guarantees a failed write).
+    const onlineIds=new Set(state.devices.filter(d=>d.online).map(d=>d.deviceID));
+    state.bulkSel=new Set([...state.bulkSel].filter(id=>onlineIds.has(id)));
     renderBulkBar();
-    renderZones();
+    renderZones(true);   // fromPoll: guarded so it won't tear down focus/dropdowns
     renderAutoStripe();   // zone names + live equipment counts may now resolve
     const sig=state.devices.map(d=>d.deviceID).sort().join("|");
     if(sig!==state.pickerSig){ state.pickerSig=sig; populatePickers(); loadOnboard(); }
@@ -1371,7 +1536,7 @@ function renderScheduleTz(){
   if(!s.schedule_timezone){ el.hidden=true; return; }
   el.hidden=false;
   el.innerHTML=`Program times run in <b>${esc(s.schedule_timezone)}</b>`+
-    (s.server_time?` — server clock now: <b>${esc(s.server_time)}</b>. If that clock looks wrong, fix <code style="font-family:var(--mono)">SCHEDULE_TZ</code> in .env before trusting the times below.`:".");
+    (s.server_time?` — server clock now: <b>${esc(s.server_time)}</b>. If that clock looks wrong, program times may fire at the wrong hour — ask your installer to correct the dashboard time zone before trusting the times below.`:".");
 }
 const DAYS=["mon","tue","wed","thu","fri","sat","sun"];
 let selDays=new Set();
@@ -1413,15 +1578,15 @@ function renderPeriods(){
   const c=document.getElementById("p-periods"); if(!c) return;
   if(!progPeriods.length){ c.innerHTML=`<div class="periods-empty">No periods yet — add one below (Turn ON / Set temperature / Turn OFF).</div>`; return; }
   const modeOpts=s=>["","Heat","Cool","Auto","Off"].map(m=>`<option value="${m}" ${s===m?'selected':''}>${m||'— leave mode —'}</option>`).join("");
-  const holdOpts=s=>[["PermanentHold","Permanent hold (app owns it)"],["TemporaryHold","Until next period"],["NoHold","Resume onboard schedule"]].map(([v,l])=>`<option value="${v}" ${s===v?'selected':''}>${l}</option>`).join("");
-  c.innerHTML=progPeriods.map((p,i)=>{ const off=p.mode==="Off";
+  const holdOpts=s=>[["PermanentHold","Permanent hold"],["TemporaryHold","Until next period"],["NoHold","Resume schedule"]].map(([v,l])=>`<option value="${v}" ${s===v?'selected':''}>${l}</option>`).join("");
+  c.innerHTML=progPeriods.map((p,i)=>{ const off=p.mode==="Off"; const n=i+1;
     return `<div class="brow period">
-      <div class="f" style="flex:0 0 108px"><span class="mini">Time</span><input type="time" value="${esc(p.time||'')}" onchange="updPeriod(${i},'time',this.value)"></div>
-      <div class="f"><span class="mini">Mode</span><div class="field sel"><select onchange="updPeriod(${i},'mode',this.value)">${modeOpts(p.mode||'')}</select></div></div>
-      <div class="f"><span class="mini">Heat °</span><input type="number" value="${p.heat??''}" ${off?'disabled':''} onchange="updPeriod(${i},'heat',this.value)"></div>
-      <div class="f"><span class="mini">Cool °</span><input type="number" value="${p.cool??''}" ${off?'disabled':''} onchange="updPeriod(${i},'cool',this.value)"></div>
-      <div class="f grow"><span class="mini">Hold</span><div class="field sel"><select onchange="updPeriod(${i},'hold',this.value)">${holdOpts(p.hold||'')}</select></div></div>
-      <button class="btn danger rm" aria-label="Remove period" onclick="rmPeriod(${i})">✕</button>
+      <div class="f" style="flex:0 0 108px"><span class="mini">Time</span><input type="time" aria-label="Period ${n} time" value="${esc(p.time||'')}" onchange="updPeriod(${i},'time',this.value)"></div>
+      <div class="f"><span class="mini">Mode</span><div class="field sel"><select aria-label="Period ${n} mode" onchange="updPeriod(${i},'mode',this.value)">${modeOpts(p.mode||'')}</select></div></div>
+      <div class="f"><span class="mini">Heat °</span><input type="number" min="40" max="95" aria-label="Period ${n} heat setpoint" value="${p.heat??''}" ${off?'disabled':''} onchange="updPeriod(${i},'heat',this.value)"></div>
+      <div class="f"><span class="mini">Cool °</span><input type="number" min="40" max="95" aria-label="Period ${n} cool setpoint" value="${p.cool??''}" ${off?'disabled':''} onchange="updPeriod(${i},'cool',this.value)"></div>
+      <div class="f grow"><span class="mini">Hold</span><div class="field sel"><select aria-label="Period ${n} hold" onchange="updPeriod(${i},'hold',this.value)">${holdOpts(p.hold||'')}</select></div></div>
+      <button class="btn danger rm" aria-label="Remove period ${n}" onclick="rmPeriod(${i})">✕</button>
     </div>`;
   }).join("");
 }
@@ -1431,19 +1596,23 @@ function fmtProgram(r){
   const pers=(r.periods||[]).map(p=>`<span class="pp"><b>${esc(p.time)}</b> ${esc(actionSummary(p.action||{}))}</span>`).join("");
   return {days:esc(days),tgt:esc(tgt),pers};
 }
-async function loadSchedules(){
+async function loadSchedules(fromPoll){
+  const list=document.getElementById("ruleList");
   try{
     const r=await api("/api/schedules"); const rules=r.schedules||[]; state.schedules=rules;
+    state.schedLoaded=true;
     document.getElementById("schedCount").textContent=rules.length||"0";
-    const list=document.getElementById("ruleList");
+    // Don't tear down the list under the operator mid-interaction on a background poll.
+    if(fromPoll && list.contains(document.activeElement)){ loadOnboard(true); return; }
     if(!rules.length){ list.innerHTML=`<div class="empty"><div class="e-ic">${IC.inbox}</div>
       <div class="big">No programs yet</div>
-      <div class="lede">Create a daily program below — set ON/OFF times or timed temperature changes for your zones.</div></div>`; return; }
+      <div class="lede">Create a daily program below — set ON/OFF times or timed temperature changes for your zones.</div></div>`;
+      loadOnboard(fromPoll); return; }
     list.innerHTML="";
     for(const r of rules){ const f=fmtProgram(r); const div=document.createElement("div");
       div.className="auto-item"+(r.enabled?"":" disabled");
       div.innerHTML=`<div class="auto-head">
-          <button class="toggle ${r.enabled?'on':''}" role="switch" aria-checked="${!!r.enabled}" aria-label="Enable ${esc(r.name||r.id)}" onclick="toggleRule('${r.id}',${!r.enabled})"></button>
+          <button class="toggle ${r.enabled?'on':''}" role="switch" aria-checked="${!!r.enabled}" aria-label="Enable ${esc(r.name||r.id)}" onclick="toggleRule('${r.id}',${!r.enabled},this)"></button>
           <span class="aname">${esc(r.name||r.id)}</span>
           <span class="flexspace">
             <button class="btn sm" onclick="editProgram('${r.id}')">Edit</button>
@@ -1451,8 +1620,12 @@ async function loadSchedules(){
         <div class="auto-trigger">${f.days} · ${f.tgt}</div>
         <div class="prog-periods">${f.pers}</div>`;
       list.appendChild(div); }
-    loadOnboard();
-  }catch(e){}
+    loadOnboard(fromPoll);
+  }catch(e){
+    // Distinguish a failed first load from "genuinely empty" instead of a blank pane.
+    if(!state.schedLoaded && list) list.innerHTML=`<div class="empty"><div class="e-ic">${IC.err}</div>
+      <div class="big">Couldn't load programs</div><div class="lede">${esc(e.message||"Check the connection and try Refresh.")}</div></div>`;
+  }
 }
 function resetProgramForm(){
   editingProgram=null; selDays=new Set(); progPeriods=[];
@@ -1476,7 +1649,7 @@ function editProgram(id){
   document.getElementById("p-save").textContent="Save changes";
   document.getElementById("p-cancel").hidden=false;
   renderDayPicker(); renderPeriods();
-  document.getElementById("progFormTitle").scrollIntoView({behavior:"smooth",block:"start"});
+  document.getElementById("progFormTitle").scrollIntoView({behavior:prefersReducedMotion()?"auto":"smooth",block:"start"});
 }
 async function saveProgram(btn){
   const name=(document.getElementById("p-name").value.trim())||"Program";
@@ -1485,10 +1658,17 @@ async function saveProgram(btn){
   if(target!=="all"&&!target.length){ toast("Pick at least one zone for this program",true); return; }
   if(!progPeriods.length){ toast("Add at least one period",true); return; }
   const periods=[];
-  for(const p of progPeriods){
+  for(let i=0;i<progPeriods.length;i++){
+    const p=progPeriods[i], n=i+1;
     if(!p.time){ toast("Every period needs a time",true); return; }
     const a=periodAction(p);
     if(!Object.keys(a).length){ toast("Each period needs a mode or a setpoint",true); return; }
+    // Range-check + deadband so a typo isn't stored raw and silently clamped by the
+    // server every time the period fires (the value would misrepresent the plan).
+    if(a.heatSetpoint!=null&&(a.heatSetpoint<40||a.heatSetpoint>95)){ toast("Period "+n+": Heat must be between 40 and 95°",true); return; }
+    if(a.coolSetpoint!=null&&(a.coolSetpoint<40||a.coolSetpoint>95)){ toast("Period "+n+": Cool must be between 40 and 95°",true); return; }
+    if(a.heatSetpoint!=null&&a.coolSetpoint!=null&&a.coolSetpoint<a.heatSetpoint+DEADBAND){
+      toast("Period "+n+": Cool must be at least "+DEADBAND+"° above Heat",true); return; }
     periods.push({time:p.time,action:a});
   }
   const rule={name,days:[...selDays],targets:target,periods};
@@ -1505,17 +1685,20 @@ async function saveProgram(btn){
   }catch(e){ toast("Couldn't save: "+e.message,true); }
 }
 async function delRule(id,btn){
-  if(!await confirmDialog("Delete this program? This can't be undone.")) return;
+  if(!await confirmDialog("Delete this program? This can't be undone.","Delete",true,"Delete program?")) return;
   try{ await withBusy(btn,()=>api("/api/schedules/"+id,{method:"DELETE"})); toast("Program deleted");
     if(editingProgram===id) resetProgramForm(); loadSchedules();
   }catch(e){ toast(e.message,true); }
 }
-async function toggleRule(id,en){ try{
+async function toggleRule(id,en,el){
+  if(el){ el.classList.toggle("on",en); el.setAttribute("aria-checked",en); el.setAttribute("aria-busy","true"); }
+  try{
     await api("/api/schedules/"+id+"/enabled",{method:"POST",body:JSON.stringify({enabled:en})});
-    loadSchedules(); }catch(e){ toast(e.message,true); } }
+    loadSchedules();
+  }catch(e){ if(el){ el.classList.toggle("on",!en); el.setAttribute("aria-checked",!en); el.removeAttribute("aria-busy"); } toast(e.message,true); } }
 
 /* sole controller (takeover) */
-async function loadOnboard(){
+async function loadOnboard(fromPoll){
   const c=document.getElementById("onboardList"); if(!c) return;
   try{
     const r=await api("/api/onboard_schedule");
@@ -1525,12 +1708,14 @@ async function loadOnboard(){
     // Keep the zone cards' NoHold warning/disable in step with the live sole-control state.
     if(soleChanged && state.loaded && state.devices.length) renderZones();
     const tg=document.getElementById("soleToggle");
-    if(tg){ tg.classList.toggle("on",sole); tg.setAttribute("aria-checked",sole); }
+    if(tg && !tg.hasAttribute("aria-busy")){ tg.classList.toggle("on",sole); tg.setAttribute("aria-checked",sole); }
     const desc=document.getElementById("soleDesc");
     if(desc) desc.textContent = sole
-      ? "ON — this app holds every zone under a permanent hold. The thermostats' onboard schedules and the Resideo app never change your zones; the app re-asserts control automatically on each poll."
+      ? "ON — this app holds every zone under a permanent hold. The thermostats' onboard schedules and the Resideo app never change your zones; the app re-asserts control automatically on each update."
       : "OFF — zones may follow their own onboard/Resideo schedule. Turn on to make this app the single controller of every zone.";
-    if(!state.devices.length){ c.innerHTML=`<div class="conds-empty">No zones yet — connect the account and wait for the first poll.</div>`; return; }
+    if(!state.devices.length){ c.innerHTML=`<div class="conds-empty">No zones yet — connect the account and wait for the first update.</div>`; return; }
+    // Don't tear down the list under the operator mid-interaction on a background poll.
+    if(fromPoll && c.contains(document.activeElement)) return;
     c.innerHTML=state.devices.map(d=>{ const on=taken.has(d.deviceID); const did=jsAttr(d.deviceID);
       const action = on
         ? (sole ? `<span style="color:var(--faint);font-size:12px">held</span>`
@@ -1538,19 +1723,29 @@ async function loadOnboard(){
         : `<button class="btn sm warm" onclick="disableOnboard('${did}',this)">Hold now</button>`;
       return `<div class="brow" style="align-items:center">
         <span class="badge ${on?'':'off'}" style="${on?'':'background:var(--surface-2);color:var(--muted)'}">${on?'HELD BY APP':'NOT HELD'}</span>
-        <div class="f grow" style="flex:3 1 200px"><span class="rname" style="font-weight:650">${esc(d.name)}</span> <span style="color:var(--faint);font-family:var(--mono);font-size:11px">${esc(d.deviceID)}</span></div>
+        <div class="f grow" style="flex:3 1 200px"><span class="rname" style="font-weight:600">${esc(d.name)}</span> <span style="color:var(--faint);font-family:var(--mono);font-size:11px">${esc(d.deviceID)}</span></div>
         ${action}
       </div>`; }).join("");
   }catch(e){}
 }
 async function toggleSoleControl(){
   const next=!state.soleControl;
-  if(!next && !await confirmDialog("Turn off Sole Controller mode? Zones will be allowed to follow their own onboard/Resideo schedule again.","Turn off")) return;
+  if(!next && !await confirmDialog("Turn off Sole Controller mode? Zones will be allowed to follow their own onboard/Resideo schedule again.","Turn off",true,"Turn off Sole Controller?")) return;
+  // Optimistic + busy so the switch responds instantly instead of freezing for a
+  // full round-trip; loadOnboard reconciles the real state, or we revert on error.
+  const tg=document.getElementById("soleToggle");
+  if(tg){ tg.classList.toggle("on",next); tg.setAttribute("aria-checked",next);
+    tg.setAttribute("aria-busy","true"); tg.style.pointerEvents="none"; }
   try{
     await api("/api/sole_control",{method:"POST",body:JSON.stringify({enabled:next})});
     toast(next?"Sole Controller mode on — taking control of all zones":"Sole Controller mode off");
+    if(tg){ tg.removeAttribute("aria-busy"); tg.style.pointerEvents=""; }
     loadOnboard(); setTimeout(loadDevices,1500);
-  }catch(e){ toast("Couldn't change mode: "+e.message,true); }
+  }catch(e){
+    if(tg){ tg.classList.toggle("on",!next); tg.setAttribute("aria-checked",!next);
+      tg.removeAttribute("aria-busy"); tg.style.pointerEvents=""; }
+    toast("Couldn't change mode: "+e.message,true);
+  }
 }
 async function disableOnboard(id,btn){
   try{ await withBusy(btn,()=>api("/api/devices/"+id+"/onboard_schedule/disable",{method:"POST"}));
@@ -1558,7 +1753,7 @@ async function disableOnboard(id,btn){
   }catch(e){ toast("Couldn't take over: "+e.message,true); }
 }
 async function restoreOnboard(id,btn){
-  if(!await confirmDialog("Release this zone to its onboard schedule? While Sole Controller mode is on, the app will take it back on a later poll.","Release")) return;
+  if(!await confirmDialog("Release this zone to its onboard schedule? While Sole Controller mode is on, the app will take it back on a later update.","Release",false,"Release to onboard schedule?")) return;
   try{ await withBusy(btn,()=>api("/api/devices/"+id+"/onboard_schedule/restore",{method:"POST"}));
     toast("Released "+deviceName(id)+" to its onboard schedule"); loadOnboard(); setTimeout(loadDevices,1200);
   }catch(e){ toast("Couldn't release: "+e.message,true); }
@@ -1567,9 +1762,15 @@ async function restoreOnboard(id,btn){
 /* ---------- alerts ---------- */
 async function loadAlerts(){
   try{
-    const r=await api("/api/alerts"); state.alerts=r.alerts||[];
+    const r=await api("/api/alerts"); state.alerts=r.alerts||[]; state.alertsLoaded=true;
     renderAlerts();
-  }catch(e){}
+  }catch(e){
+    // Distinguish a failed first load from "All clear" instead of a blank/false pane.
+    if(!state.alertsLoaded){ const list=document.getElementById("alertList");
+      if(list) list.innerHTML=`<div class="empty"><div class="e-ic">${IC.err}</div>
+        <div class="big">Couldn't load alerts</div><div class="lede">${esc(e.message||"Check the connection and try Refresh.")}</div></div>`;
+    }
+  }
 }
 function fmtAbs(ts){ return ts?new Date(ts*1000).toLocaleString():""; }
 function renderAlerts(){
@@ -1587,7 +1788,7 @@ function renderAlerts(){
     if(wrap) wrap.hidden=true;
     list.innerHTML=`<div class="empty"><div class="e-ic">${IC.ok}</div>
       <div class="big">All clear</div>
-      <div class="lede">Offline zones, temperature excursions, and failed commands will show up here.</div></div>`;
+      <div class="lede">Offline zones, out-of-range temperatures, and failed commands will show up here.</div></div>`;
     return;
   }
   if(wrap){
@@ -1604,10 +1805,12 @@ function renderAlerts(){
     return;
   }
   list.innerHTML="";
+  const sevWord={critical:"Critical",warning:"Warning",info:"Info"};
   for(const a of show){ const sev=a.severity||"info"; const div=document.createElement("div");
     div.className="alert "+sev;
-    div.innerHTML=`<span class="a-ic">${IC[sev]||IC.info}</span>
-      <span class="msg">${esc(a.message)}</span><span class="ts" data-ago="${Number(a.ts)||0}" title="${esc(fmtAbs(a.ts))}">${ago(a.ts)}</span>`;
+    // Severity is otherwise conveyed only by icon+color; prefix it for screen readers.
+    div.innerHTML=`<span class="a-ic" aria-hidden="true">${IC[sev]||IC.info}</span>
+      <span class="msg"><span class="sr-only">${sevWord[sev]||"Info"}: </span>${esc(a.message)}</span><span class="ts" data-ago="${Number(a.ts)||0}" title="${esc(fmtAbs(a.ts))}">${ago(a.ts)}</span>`;
     list.appendChild(div); }
 }
 
@@ -1619,7 +1822,7 @@ function makePicker(id){
   const prevAll=!!c.querySelector(".selall input:checked");
   const prevSel=new Set([...c.querySelectorAll(".opt input:checked")].map(cb=>cb.value));
   if(!state.devices.length){ c.className="picker empty";
-    c.textContent="No zones yet — connect the account and wait for the first poll."; return; }
+    c.textContent="No zones yet — connect the account and wait for the first update."; return; }
   c.className="picker";
   c.innerHTML =
     `<label class="selall"><input type="checkbox"${prevAll?' checked':''} onchange="pickAll('${id}',this.checked)"> All zones</label>`+
@@ -1748,8 +1951,8 @@ function renderAutoStripe(){
   const strip=document.getElementById("autoStripe");
   if(!strip||!state.autoMeta) return;
   const bits=[];
-  if(!state.autoMeta.mqtt_enabled) bits.push(`<div class="stat warnbox">MQTT disabled — triggers won't fire. Use <b>Run now</b> to test, and set <b>MQTT_ENABLED=true</b> to go live.</div>`);
-  else bits.push(`<div class="stat"><span class="dot ${state.autoMeta.mqtt_connected?'on':'off'}"></span>MQTT ${state.autoMeta.mqtt_connected?'connected':'not connected'}</div>`);
+  if(!state.autoMeta.mqtt_enabled) bits.push(`<div class="stat warnbox">Automations are turned off, so triggers won't fire. Use <b>Run now</b> to test a rule; ask whoever installed this dashboard to turn automations on.</div>`);
+  else bits.push(`<div class="stat"><span class="dot ${state.autoMeta.mqtt_connected?'on':'off'}"></span>Automation link ${state.autoMeta.mqtt_connected?'connected':'not connected'}</div>`);
   (state.autoStatus.rotations||[]).forEach(rot=>{
     const names=rot.running.map(deviceName).map(esc).join(", ")||"none";
     // Live cross-check: of the zones in the "on" window, how many report
@@ -1765,24 +1968,26 @@ function renderAutoStripe(){
     bits.push(`<div class="stat">saved “<b>${esc(n)}</b>” · ${ids.length} zone(s)</div>`));
   strip.innerHTML=bits.join("");
 }
-async function loadAutomations(){
+async function loadAutomations(fromPoll){
+  const list=document.getElementById("autoList");
   try{
     const r=await api("/api/automations");
     const rules=r.automations||[]; state.autoStatus=r.status||{}; state.autos=rules;
     state.autoMeta={mqtt_enabled:r.mqtt_enabled,mqtt_connected:r.mqtt_connected};
+    state.autoLoaded=true;
     document.getElementById("autoCount").textContent=rules.length||"0";
     renderAutoStripe();
-
-    const list=document.getElementById("autoList");
+    // Don't tear down the list under the operator mid-interaction on a background poll.
+    if(fromPoll && list.contains(document.activeElement)) return;
     if(!rules.length){ list.innerHTML=`<div class="empty"><div class="e-ic">${IC.bolt}</div>
       <div class="big">No automations yet</div>
-      <div class="lede">Set up the generator load-shed above, or build a custom rule.</div></div>`; return; }
+      <div class="lede">Set up the Power-outage plan above, or build a custom rule.</div></div>`; return; }
     list.innerHTML="";
     for(const rule of rules){ const div=document.createElement("div");
       div.className="auto-item"+(rule.enabled?"":" disabled");
       div.innerHTML=`
         <div class="auto-head">
-          <button class="toggle ${rule.enabled?'on':''}" role="switch" aria-checked="${!!rule.enabled}" aria-label="Enable ${esc(rule.name||rule.id)}" onclick="toggleAuto('${rule.id}',${!rule.enabled})"></button>
+          <button class="toggle ${rule.enabled?'on':''}" role="switch" aria-checked="${!!rule.enabled}" aria-label="Enable ${esc(rule.name||rule.id)}" onclick="toggleAuto('${rule.id}',${!rule.enabled},this)"></button>
           <span class="aname">${esc(rule.name||rule.id)}</span>
           <span class="flexspace">
             <button class="btn sm" onclick="runAuto('${rule.id}',this)">Run now</button>
@@ -1793,13 +1998,19 @@ async function loadAutomations(){
         <div class="auto-trigger">when ${matchDesc(rule.trigger||{})}</div>
         <div class="auto-actions">${(rule.actions||[]).map(a=>`<span class="tag">${esc(a.type)}</span>${actionDesc(a)}`).join("<br>")}</div>`;
       list.appendChild(div); }
-  }catch(e){}
+  }catch(e){
+    if(!state.autoLoaded && list) list.innerHTML=`<div class="empty"><div class="e-ic">${IC.err}</div>
+      <div class="big">Couldn't load automations</div><div class="lede">${esc(e.message||"Check the connection and try Refresh.")}</div></div>`;
+  }
 }
-async function toggleAuto(id,en){ try{
-  await api("/api/automations/"+id+"/enabled",{method:"POST",body:JSON.stringify({enabled:en})});
-  loadAutomations(); }catch(e){ toast(e.message,true); } }
+async function toggleAuto(id,en,el){
+  if(el){ el.classList.toggle("on",en); el.setAttribute("aria-checked",en); el.setAttribute("aria-busy","true"); }
+  try{
+    await api("/api/automations/"+id+"/enabled",{method:"POST",body:JSON.stringify({enabled:en})});
+    loadAutomations();
+  }catch(e){ if(el){ el.classList.toggle("on",!en); el.setAttribute("aria-checked",!en); el.removeAttribute("aria-busy"); } toast(e.message,true); } }
 async function delAuto(id,btn){
-  if(!await confirmDialog("Delete this automation? This can't be undone.")) return;
+  if(!await confirmDialog("Delete this automation? This can't be undone.","Delete",true,"Delete automation?")) return;
   try{ await withBusy(btn,()=>api("/api/automations/"+id,{method:"DELETE"})); toast("Automation deleted"); loadAutomations(); }
   catch(e){ toast(e.message,true); }
 }
@@ -1810,7 +2021,7 @@ async function runAuto(id,btn){
   const destructive=((rule&&rule.actions)||[]).some(a=>["set","rotate","stop_rotation"].includes(a.type));
   if(destructive && !await confirmDialog(
       "Run “"+((rule&&rule.name)||id)+"” now? This immediately changes live zones "+
-      "(shed / rotate / stop rotation), not a test.","Run now")) return;
+      "(shed / rotate / stop rotation), not a test.","Run now",false,"Run automation now?")) return;
   try{
     await withBusy(btn,()=>api("/api/automations/"+id+"/run",{method:"POST"}));
     toast("Ran automation"); setTimeout(loadDevices,1200); setTimeout(loadAutomations,1200);
@@ -1860,7 +2071,7 @@ async function createGeneratorRules(btn){
   if(existingPlan.length && !await confirmDialog(
       "An outage plan already exists ("+existingPlan.length+" generator rule(s) in the list below). "+
       "A second plan would fire on the same trigger and fight the first — usually you want to "+
-      "delete or edit the existing rules instead. Create another anyway?","Create anyway")) return;
+      "delete or edit the existing rules instead. Create another anyway?","Create anyway",false,"Create another outage plan?")) return;
 
   let snapTargets="all";
   if(shed!=="all"&&rotate!=="all") snapTargets=[...new Set([...(Array.isArray(shed)?shed:[]),...(Array.isArray(rotate)?rotate:[])])];
@@ -1899,40 +2110,41 @@ function renderActionFields(){
   const t=document.getElementById("a-type").value;
   const d1=document.getElementById("a-dynamic-1"), d2=document.getElementById("a-dynamic-2");
   d1.innerHTML=""; d2.innerHTML="";
-  const picker=id=>`<label>Zones</label><div class="picker" id="${id}"></div>`;
+  const picker=(id,lbl)=>`<label id="${id}-lbl">${lbl||"Zones"}</label><div class="picker" id="${id}" role="group" aria-labelledby="${id}-lbl"></div>`;
   if(t==="set"){
     d2.innerHTML=picker("a-set-tgt")+
       `<div class="form-grid" style="margin-top:12px">
-        <div class="fld"><label>Mode</label><div class="field sel"><select id="a-mode">
+        <div class="fld"><label for="a-mode">Mode</label><div class="field sel"><select id="a-mode">
           <option value="">— leave —</option><option>Heat</option><option>Cool</option><option>Auto</option><option>Off</option></select></div></div>
-        <div class="fld"><label>Hold</label><div class="field sel"><select id="a-hold">
-          <option value="PermanentHold">Permanent (app owns it)</option><option value="TemporaryHold">Until next schedule</option>
-          <option value="NoHold">Resume onboard schedule</option></select></div></div>
-        <div class="fld"><label>Heat setpoint</label><input id="a-heat" type="number" placeholder="—"></div>
-        <div class="fld"><label>Cool setpoint</label><input id="a-cool" type="number" placeholder="—"></div>
+        <div class="fld"><label for="a-hold">Hold</label><div class="field sel"><select id="a-hold">
+          <option value="PermanentHold">Permanent hold</option><option value="TemporaryHold">Hold until next schedule</option>
+          <option value="NoHold">Resume schedule</option></select></div></div>
+        <div class="fld"><label for="a-heat">Heat setpoint</label><input id="a-heat" type="number" min="40" max="95" placeholder="—"></div>
+        <div class="fld"><label for="a-cool">Cool setpoint</label><input id="a-cool" type="number" min="40" max="95" placeholder="—"></div>
       </div>`;
     makePicker("a-set-tgt");
   } else if(t==="rotate"){
     d2.innerHTML=picker("a-rot-tgt")+
       `<div class="form-grid" style="margin-top:12px">
-        <div class="fld"><label>Rotation id</label><input id="a-rid" class="mono" value="group-a"></div>
-        <div class="fld"><label>How many on</label><div class="field sel"><select id="a-runmode">
+        <div class="fld"><label for="a-rid">Rotation id</label><input id="a-rid" class="mono" value="group-a"></div>
+        <div class="fld"><label for="a-runmode">How many on</label><div class="field sel"><select id="a-runmode">
           <option value="count">Set number</option><option value="half">Half on/off</option></select></div></div>
-        <div class="fld" id="a-run-wrap"><label>Number running</label><input id="a-run" type="number" min="1" value="2"></div>
-        <div class="fld"><label>Interval (min, ≥5)</label><input id="a-int" type="number" min="5" value="15"></div>
-        <div class="fld"><label>Run mode (on)</label><div class="field sel"><select id="a-onmode">
+        <div class="fld" id="a-run-wrap"><label for="a-run">Number running</label><input id="a-run" type="number" min="1" value="2"></div>
+        <div class="fld"><label for="a-int">Interval (min, ≥5)</label><input id="a-int" type="number" min="5" value="15"></div>
+        <div class="fld"><label for="a-onmode">Run mode (on)</label><div class="field sel"><select id="a-onmode">
           <option value="Auto">Auto</option><option value="Cool">Cool</option><option value="Heat">Heat</option></select></div></div>
-        <div class="fld"><label>Heat setpoint (on)</label><input id="a-onheat" type="number" value="66"></div>
-        <div class="fld"><label>Cool setpoint (on)</label><input id="a-oncool" type="number" value="80"></div>
+        <div class="fld"><label for="a-onheat">Heat setpoint (on)</label><input id="a-onheat" type="number" min="40" max="95" value="66"></div>
+        <div class="fld"><label for="a-oncool">Cool setpoint (on)</label><input id="a-oncool" type="number" min="40" max="95" value="80"></div>
       </div>`;
     makePicker("a-rot-tgt");
+    bindRunModeToggle("a-runmode","a-run-wrap");   // elements exist now; also syncs initial state
   } else if(t==="snapshot"){
-    d1.innerHTML=`<label>Snapshot name</label><input id="a-snap" class="mono" value="saved">`;
+    d1.innerHTML=`<label for="a-snap">Snapshot name</label><input id="a-snap" class="mono" value="saved">`;
     d2.innerHTML=picker("a-snap-tgt"); makePicker("a-snap-tgt");
   } else if(t==="restore"){
-    d1.innerHTML=`<label>Snapshot name</label><input id="a-rsnap" class="mono" placeholder="pre_generator">`;
+    d1.innerHTML=`<label for="a-rsnap">Snapshot name</label><input id="a-rsnap" class="mono" placeholder="pre_generator">`;
   } else if(t==="stop_rotation"){
-    d1.innerHTML=`<label>Rotation id</label><input id="a-srid" class="mono" placeholder="generator">`;
+    d1.innerHTML=`<label for="a-srid">Rotation id</label><input id="a-srid" class="mono" placeholder="generator">`;
   }
 }
 function addDraftAction(){
@@ -1975,7 +2187,7 @@ function renderDraftActions(){
   c.innerHTML=draftActions.map((a,i)=>`<div class="actrow"><span class="tag">${esc(a.type)}</span>`+
     `<span class="body">${actionDesc(a)}</span>`+
     `<button class="x" aria-label="Remove action" onclick="draftActions.splice(${i},1);renderDraftActions()">✕</button></div>`).join("")
-    || `<div style="color:var(--faint);font-size:12.5px;margin-bottom:8px">No actions yet — add one below.</div>`;
+    || `<div style="color:var(--faint);font-size:12px;margin-bottom:8px">No actions yet — add one below.</div>`;
 }
 /* ---- trigger conditions (AND/OR) ---- */
 let draftConds=[];
@@ -2024,7 +2236,10 @@ function editAuto(id){
   document.getElementById("c-create").textContent="Save changes";
   document.getElementById("c-cancel").hidden=false;
   renderConds(); renderDraftActions();
-  const adv=document.querySelector("details.adv"); if(adv){ adv.open=true; adv.scrollIntoView({behavior:"smooth",block:"start"}); }
+  // Select the CUSTOM-RULE builder explicitly — querySelector("details.adv")
+  // returned the FIRST details (the generator wizard), expanding the wrong panel.
+  const adv=document.getElementById("customRuleBuilder");
+  if(adv){ adv.open=true; adv.scrollIntoView({behavior:prefersReducedMotion()?"auto":"smooth",block:"start"}); }
 }
 async function saveAuto(btn){
   const name=document.getElementById("c-name").value.trim()||"Custom rule";
@@ -2080,7 +2295,8 @@ function bindRunModeToggle(sel,wrap){
   s.addEventListener("change",upd); upd();
 }
 bindRunModeToggle("g-runmode","g-run-wrap");
-bindRunModeToggle("a-runmode","a-run-wrap");
+// a-runmode/a-run-wrap only exist after renderActionFields builds the rotate
+// branch, so that binding is done there (not here, where they don't exist yet).
 
 // Keep the outage-plan preview live. Delegated on the card so it survives picker
 // rebuilds (makePicker replaces the pickers' innerHTML on every device refresh).
@@ -2108,9 +2324,23 @@ document.getElementById("alertFilters").addEventListener("click",e=>{
 document.getElementById("themeBtn").onclick=toggleTheme;
 document.getElementById("refreshBtn").onclick=function(){
   const btn=this;
-  withBusy(btn,async()=>{ await api("/api/refresh",{method:"POST"}); })
-    .then(()=>{ toast("Refreshing from Honeywell…"); setTimeout(()=>{refreshStatus();loadDevices();},1500); })
-    .catch(e=>toast(e.message,true));
+  // Keep the spinner until a genuinely fresh update lands (last_ok_poll_ts
+  // advances), not a guessed delay that can beat a slow/rate-limited poll —
+  // then reload EVERY tab so the whole dashboard is current, not just zones.
+  const before=(state.status||{}).last_ok_poll_ts||(state.status||{}).last_poll_ts||0;
+  withBusy(btn,async()=>{
+    await api("/api/refresh",{method:"POST"});
+    toast("Refreshing from Honeywell…");
+    const deadline=Date.now()+20000;
+    while(Date.now()<deadline){
+      await new Promise(r=>setTimeout(r,1200));
+      let s; try{ s=await api("/api/status"); }catch(e){ continue; }
+      state.status=s;
+      if(s.last_poll_error) break;                       // failed poll: stop, show it
+      if((s.last_ok_poll_ts||s.last_poll_ts||0)>before) break;   // fresh data arrived
+    }
+    refreshStatus(); loadDevices(); loadAlerts(); loadAutomations(); loadSchedules();
+  }).catch(e=>toast(e.message,true));
 };
 // schedules / program builder
 document.getElementById("p-add-on").onclick=()=>addPeriod("on");
@@ -2125,20 +2355,25 @@ document.getElementById("a-add").onclick=addDraftAction;
 document.getElementById("c-create").onclick=function(){ saveAuto(this); };
 document.getElementById("c-cancel").onclick=resetAutoForm;
 
+// The clock is HH:MM and every relative label is minute-granular, so this runs
+// on a calm cadence (not per second) and skips no-op text writes. Freshness and
+// alert ages also refresh whenever their data reloads (~10s), so this is a
+// low-frequency safety refresher, not the churn it used to be.
 function tick(){
   document.getElementById("clock").textContent=
     new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-  // Keep every relative timestamp live ("as of 20s ago", "updated 1m ago",
-  // alert ages), even while polls are failing.
   document.querySelectorAll("[data-ago]").forEach(el=>{
-    el.textContent=(el.dataset.prefix||"")+ago(Number(el.dataset.ago)); });
+    const ts=Number(el.dataset.ago);
+    const txt=(el.dataset.prefix||"")+(el.dataset.coarse?agoCoarse(ts):ago(ts));
+    if(el.textContent!==txt) el.textContent=txt;
+  });
 }
 
 /* One poll cycle with an in-flight guard so slow/hung fetches don't stack up. */
 let pollBusy=false;
 async function pollCycle(){
   if(pollBusy) return; pollBusy=true;
-  try{ await Promise.allSettled([refreshStatus(),loadDevices(),loadAlerts(),loadAutomations()]); }
+  try{ await Promise.allSettled([refreshStatus(),loadDevices(),loadAlerts(),loadAutomations(true)]); }
   finally{ pollBusy=false; }
 }
 
@@ -2149,10 +2384,10 @@ renderActionFields();     // action-type dynamic fields
 resetProgramForm();       // day picker + empty periods
 resetAutoForm();          // one blank condition + empty actions
 updateGeneratorPreview(); // seed the outage-plan preview + "listening" line
-tick(); setInterval(tick,1000);
+tick(); setInterval(tick,15000);
 refreshStatus(); loadDevices(); loadSchedules(); loadAlerts(); loadAutomations();
 setInterval(pollCycle, 10000);
-setInterval(loadSchedules, 30000);
+setInterval(()=>loadSchedules(true), 30000);
 </script>
 </body>
 </html>

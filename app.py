@@ -129,10 +129,10 @@ def _mqtt_connection_change(connected: bool) -> None:
     """Raise an operator alert when the broker link changes state. Without this a
     dropped broker is invisible - and the generator load-shed rides on MQTT."""
     if connected:
-        notify("info", "mqtt", "MQTT broker connected.")
+        notify("info", "mqtt", "Automation link connected.")
     else:
         notify("critical", "mqtt",
-               "MQTT broker DISCONNECTED - automation triggers and external commands "
+               "Automation link disconnected — automations and external commands "
                "are offline until it reconnects.")
 
 
@@ -715,6 +715,9 @@ def api_status():
         "authorized": client.is_authorized,
         "device_count": len(store.all_device_ids()),
         "last_poll_ts": ts,
+        # Last SUCCESSFUL poll — the UI shows "Updated X ago" from this so a failed
+        # cycle can't read as fresh (last_poll_ts stamps every attempt).
+        "last_ok_poll_ts": store.last_ok_poll_ts,
         "last_poll_error": err,
         "poll_interval_seconds": Config.POLL_INTERVAL_SECONDS,
         "mqtt_enabled": Config.MQTT_ENABLED,
@@ -864,8 +867,8 @@ def api_sole_control_set(payload: dict = Body(...)):
         # Take control now rather than waiting for the next poll.
         threading.Thread(target=_enforce_sole_control, daemon=True).start()
     notify("info", "sole_control",
-           "Sole Controller mode ON - the app now holds every zone." if enabled
-           else "Sole Controller mode OFF - zones may follow their onboard schedule.")
+           "Sole Controller mode on — the app now holds every zone." if enabled
+           else "Sole Controller mode off — zones may follow their onboard schedule.")
     return {"ok": True, "enabled": enabled}
 
 
