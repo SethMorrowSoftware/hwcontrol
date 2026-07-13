@@ -300,13 +300,18 @@ class FacilityScheduler:
         except Exception:
             return datetime.datetime.now()
 
-    def _active_period(self, rule: dict, now: datetime.datetime) -> dict | None:
-        """The period whose setpoints a program says should be in effect *now* —
-        the most recent period boundary that has already passed on an active day,
-        looking back up to a week. Returns None if the program has no periods."""
+    def _active_period_at(self, rule: dict,
+                          now: datetime.datetime) -> tuple[dict | None, datetime.datetime | None]:
+        """The period a program says should be in effect *now*, plus the datetime
+        that period's boundary last occurred — the most recent boundary that has
+        already passed on an active day, looking back up to a week. The boundary
+        time lets the enforcement pass decide, when two programs cover one zone,
+        which one most recently took effect (so a weekday program's this-morning
+        boundary wins over a weekend program's carried-over Sunday-night one).
+        Returns (None, None) if the program has no periods."""
         periods = rule.get("periods") or []
         if not periods:
-            return None
+            return (None, None)
         days = [str(d).lower() for d in (rule.get("days") or [])]
         dow = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
@@ -319,14 +324,79 @@ class FacilityScheduler:
             day_idx = (now.weekday() - back) % 7
             if days and dow[day_idx] not in days:
                 continue
+            period = None
             if back == 0:
                 passed = [p for p in ordered if pmin(p) <= now_min]
                 if passed:
-                    return passed[-1]
-                # nothing yet today; keep walking back to a prior active day
+                    period = passed[-1]
+                # else nothing yet today; keep walking back to a prior active day
             else:
-                return ordered[-1]
-        return None
+                period = ordered[-1]
+            if period is not None:
+                h, m = _valid_hhmm(period.get("time"))
+                boundary = (now - datetime.timedelta(days=back)).replace(
+                    hour=h, minute=m, second=0, microsecond=0)
+                return (period, boundary)
+        return (None, None)
+
+    def _active_period(self, rule: dict, now: datetime.datetime) -> dict | None:
+        """The period whose setpoints a program says should be in effect *now*."""
+        return self._active_period_at(rule, now)[0]
+
+    def resolve_desired(self, all_device_ids):
+        """Resolve, per zone, the single action that should be in effect right now
+        across ALL enabled programs — for the enforcement pass. When two programs
+        cover the same zone, the one whose boundary occurred MOST RECENTLY wins
+        (so today's program beats an off-day program that merely carried over).
+        A zone whose two most-recent programs land on the SAME boundary time but
+        disagree is reported as a conflict and left OUT of the desired map, rather
+        than guessed.
+
+        Returns (desired, conflicts):
+          desired   = {deviceID: (action, program_name)}
+          conflicts = [{"zone": deviceID, "programs": [name, ...]}]
+        """
+        with self._lock:
+            rules = [dict(r) for r in self._rules.values() if r.get("enabled", True)]
+        now = self._now()
+        per_zone: dict[str, list] = {}
+        for rule in rules:
+            try:
+                period, boundary = self._active_period_at(rule, now)
+            except ValueError:
+                continue
+            if not period or boundary is None:
+                continue
+            action = dict(period.get("action") or {})
+            if not action:
+                continue
+            targets = rule.get("targets", "all")
+            if targets == "all":
+                zone_ids = list(all_device_ids)
+            elif isinstance(targets, str):
+                zone_ids = [targets]
+            else:
+                zone_ids = list(targets)
+            name = rule.get("name") or rule.get("id")
+            for zid in zone_ids:
+                per_zone.setdefault(zid, []).append((boundary, action, name))
+
+        desired: dict[str, tuple] = {}
+        conflicts: list[dict] = []
+        for zid, entries in per_zone.items():
+            entries.sort(key=lambda e: e[0], reverse=True)   # most-recent boundary first
+            top_time = entries[0][0]
+            top = [e for e in entries if e[0] == top_time]
+            distinct_actions = []
+            for _, action, _name in top:
+                if action not in distinct_actions:
+                    distinct_actions.append(action)
+            if len(distinct_actions) == 1:
+                desired[zid] = (top[0][1], top[0][2])
+            else:
+                conflicts.append({"zone": zid,
+                                  "programs": sorted({e[2] for e in top})})
+        return desired, conflicts
 
     def apply_active_now(self, rule_id: str) -> bool:
         """Apply the program's currently-active period right now, so it takes
@@ -351,13 +421,35 @@ class FacilityScheduler:
             log.error("Asserting program '%s' failed: %s", rule_id, exc)
             return False
 
-    def apply_all_active_now(self) -> None:
-        """Re-assert every enabled program's active period (used once at startup
-        so the app owns the setpoints as soon as devices are known)."""
-        with self._lock:
-            ids = list(self._rules)
-        for rid in ids:
-            self.apply_active_now(rid)
+    def apply_all_active_now(self, all_device_ids=None) -> None:
+        """Re-assert the active schedule (used once at startup and after an outage
+        restore, so the app owns the setpoints as soon as devices are known).
+
+        With `all_device_ids`, it resolves the winning program PER ZONE (same
+        arbitration as enforcement) so an off-day program's carried-over period
+        can't clobber the program that's actually in effect today, and genuine
+        same-time conflicts are skipped. Without it, falls back to the legacy
+        per-program assertion (kept for callers that don't have the device list)."""
+        if all_device_ids is None:
+            with self._lock:
+                ids = list(self._rules)
+            for rid in ids:
+                self.apply_active_now(rid)
+            return
+        desired, _conflicts = self.resolve_desired(all_device_ids)
+        groups: list[tuple[dict, list]] = []   # (action, [zones]) — group identical writes
+        for zid, (action, _prog) in desired.items():
+            for g in groups:
+                if g[0] == action:
+                    g[1].append(zid)
+                    break
+            else:
+                groups.append((action, [zid]))
+        for action, zids in groups:
+            try:
+                self.apply_fn(zids, action)
+            except Exception as exc:
+                log.error("Asserting schedule for %s failed: %s", zids, exc)
 
     def active_assertions(self) -> list[tuple[Any, dict]]:
         """For every enabled program that has a currently-active period, return

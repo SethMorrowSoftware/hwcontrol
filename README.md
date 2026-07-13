@@ -337,9 +337,18 @@ put any zone a program covers back to what its schedule says right now, undoing 
 temperature or mode change made at the thermostat or in the Resideo app. It's
 **drift-aware**: a zone already on its program costs no API calls, so this is cheap
 in steady state and only writes when something actually changed. Each correction
-raises an alert naming the zones, giving you a tamper log. Zones under an active
-generator rotation are left alone (same guard as programs), so it can't re-energize
-shed zones mid-outage.
+raises an alert naming the zones (and what each was set to, and which program),
+giving you a tamper log. Zones under an active generator rotation are left alone
+(same guard as programs), so it can't re-energize shed zones mid-outage.
+
+**When more than one program covers a zone**, enforcement (and the startup /
+post-outage re-assertion) picks the program whose schedule **most recently took
+effect** — so on a Monday a *weekday* program's this-morning setting beats a
+*weekend* program that merely carried over from Sunday night. This is deterministic,
+not a guess. Only when two programs land on the **same boundary time** but set the
+zone **differently** is there a real conflict: that zone is left alone and an alert
+asks you to fix the overlap, rather than the two programs fighting each other every
+update.
 
 *Enforce schedules vs. Sole Controller:* Sole Controller keeps a zone under a
 permanent hold so the onboard schedule can't act, but leaves whatever setpoint is

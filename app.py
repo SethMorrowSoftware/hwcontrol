@@ -186,6 +186,7 @@ def _save_sole_control(enabled: bool) -> None:
 
 SCHEDULE_ENFORCE_FILE = Path("schedule_enforce.json")
 _schedule_enforce_lock = threading.Lock()   # single-flights an enforcement pass
+_last_conflict_zones: frozenset = frozenset()   # debounce the conflict warning
 
 
 def _load_schedule_enforce() -> bool:
@@ -228,42 +229,81 @@ def _zone_matches_action(zone: dict, action: dict) -> bool:
     return True
 
 
+def _action_summary(action: dict) -> str:
+    """Short human description of what a program period sets (for alerts)."""
+    bits = []
+    if action.get("mode"):
+        bits.append(action["mode"])
+    if action.get("heatSetpoint") is not None:
+        bits.append(f"Heat {action['heatSetpoint']}°")
+    if action.get("coolSetpoint") is not None:
+        bits.append(f"Cool {action['coolSetpoint']}°")
+    return " ".join(bits) or "(no change)"
+
+
 def _enforce_schedules() -> None:
     """Correct any online, program-covered zone that has drifted from what its
     schedule says right now. Single-flighted; skips zones under an active
-    rotation; raises one operator alert per correction batch as a tamper log."""
+    rotation; raises one operator alert per correction batch as a tamper log.
+
+    When two enabled programs cover the same zone, the one whose boundary took
+    effect most recently wins (a today program beats an off-day carry-over). If
+    two programs tie at the same boundary but disagree, the zone is skipped and a
+    conflict is surfaced rather than guessed - so enforcement never fights itself.
+    """
+    global _last_conflict_zones
     if not _load_schedule_enforce() or scheduler is None or not client.is_authorized:
         return
     if not _schedule_enforce_lock.acquire(blocking=False):
         return
     try:
+        desired, conflicts = scheduler.resolve_desired(store.all_device_ids())
         active_rot = engine.active_rotation_targets() if engine else set()
+
+        # Group the zones that actually drifted by their target action, so a set
+        # of zones needing the same correction is one write, not N.
+        by_action: dict[str, tuple] = {}
+        for zid, (action, _prog) in desired.items():
+            if zid in active_rot:
+                continue   # under outage control; apply_schedule_action would skip it anyway
+            z = store.get(zid)
+            if not z or not z.get("online"):
+                continue
+            if _zone_matches_action(z, action):
+                continue
+            key = json.dumps(action, sort_keys=True)
+            by_action.setdefault(key, (action, []))[1].append(zid)
+
         corrected: list[str] = []
-        for targets, action in scheduler.active_assertions():
-            if targets == "all":
-                ids = store.all_device_ids()
-            elif isinstance(targets, str):
-                ids = [targets]
-            else:
-                ids = list(targets)
-            drifted = []
-            for did in ids:
-                if did in active_rot:
-                    continue   # under outage control; apply_schedule_action would skip it anyway
-                z = store.get(did)
-                if not z or not z.get("online"):
-                    continue
-                if not _zone_matches_action(z, action):
-                    drifted.append(did)
-            if drifted:
-                failed = set(apply_schedule_action(drifted, action))
-                corrected.extend(d for d in drifted if d not in failed)
+        for action, zids in by_action.values():
+            failed = set(apply_schedule_action(zids, action))
+            corrected.extend(z for z in zids if z not in failed)
+
         if corrected:
-            names = ", ".join(sorted((store.get(d) or {}).get("name") or d for d in corrected))
-            log.info("Schedule enforcement corrected %d zone(s): %s", len(corrected), names)
+            def one(z):
+                nm = (store.get(z) or {}).get("name") or z
+                act, prog = desired[z]
+                return f"{nm} → {_action_summary(act)} ({prog})"
+            shown = "; ".join(one(z) for z in corrected[:6]) + (
+                f"; +{len(corrected) - 6} more" if len(corrected) > 6 else "")
+            log.info("Schedule enforcement corrected %d zone(s): %s", len(corrected), shown)
             notify("info", "schedule_enforced",
                    f"Schedule enforcement put {len(corrected)} zone(s) back to their program "
-                   f"(a change was made at the thermostat or in the Resideo app): {names}.")
+                   f"(a change was made at the thermostat or in the Resideo app): {shown}.")
+
+        # Surface conflicting programs once per change of the conflict set, so the
+        # operator can fix the overlap instead of enforcement silently oscillating.
+        conflict_zones = frozenset(c["zone"] for c in conflicts)
+        if conflict_zones != _last_conflict_zones:
+            _last_conflict_zones = conflict_zones
+            if conflicts:
+                detail = "; ".join(
+                    f"{(store.get(c['zone']) or {}).get('name') or c['zone']} "
+                    f"({', '.join(c['programs'])})" for c in conflicts[:8])
+                notify("warning", "schedule_conflict",
+                       f"Schedule enforcement left {len(conflicts)} zone(s) alone because two "
+                       f"programs set them differently at the same time - please fix the "
+                       f"overlap: {detail}.")
     except Exception as exc:
         log.exception("Schedule enforcement pass failed: %s", exc)
     finally:
@@ -468,7 +508,7 @@ def on_zones_restored(device_ids: list) -> None:
     log.info("Restore completed for %d zone(s); re-asserting active schedule periods.",
              len(device_ids))
     try:
-        scheduler.apply_all_active_now()
+        scheduler.apply_all_active_now(store.all_device_ids())
     except Exception as exc:
         log.exception("Post-restore schedule assertion failed: %s", exc)
         notify("critical", "schedule",
@@ -651,7 +691,7 @@ def _poller_loop() -> None:
                 _schedules_asserted = True
                 _deferral_notified = False
                 try:
-                    scheduler.apply_all_active_now()
+                    scheduler.apply_all_active_now(store.all_device_ids())
                 except Exception as exc:
                     log.exception("Startup schedule assertion failed: %s", exc)
         # Keep every zone under the app's control so the onboard/Resideo schedule
