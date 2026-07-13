@@ -137,6 +137,73 @@ class ActiveAssertions(unittest.TestCase):
         self.assertEqual(action.get("heatSetpoint"), 68)
 
 
+class ResolveDesired(unittest.TestCase):
+    """Per-zone arbitration across programs: the most-recently-effective program
+    wins; a genuine same-time disagreement is a conflict, not a guess."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.s = sched(self.tmp.name, timezone="America/New_York")
+        # Freeze "now" to Monday 2026-07-13 15:00 so arbitration is deterministic.
+        self.s._now = lambda: datetime.datetime(2026, 7, 13, 15, 0)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_weekday_beats_weekend_carryover(self):
+        # Same zone, weekday + weekend programs. On a Monday the weekday program's
+        # this-morning boundary is more recent than the weekend program's carried
+        # -over Sunday-night one -> weekday wins, and it is NOT a conflict.
+        self.s.add_rule({"id": "weekday", "days": ["mon", "tue", "wed", "thu", "fri"], "targets": ["Z1"],
+                         "periods": [{"time": "06:00", "action": {"mode": "Heat", "heatSetpoint": 70}},
+                                     {"time": "22:00", "action": {"mode": "Off"}}]})
+        self.s.add_rule({"id": "weekend", "days": ["sat", "sun"], "targets": ["Z1"],
+                         "periods": [{"time": "08:00", "action": {"mode": "Heat", "heatSetpoint": 64}},
+                                     {"time": "23:00", "action": {"mode": "Off"}}]})
+        desired, conflicts = self.s.resolve_desired(["Z1"])
+        self.assertEqual(conflicts, [], "different-day programs are not a conflict")
+        action, prog = desired["Z1"]
+        self.assertEqual(prog, "weekday")
+        self.assertEqual(action.get("heatSetpoint"), 70)
+
+    def test_same_time_disagreement_is_a_conflict(self):
+        # Two every-day programs, same 06:00 boundary, different actions on Z1.
+        self.s.add_rule({"id": "a", "name": "A", "targets": ["Z1"],
+                         "periods": [{"time": "06:00", "action": {"mode": "Heat", "heatSetpoint": 70}}]})
+        self.s.add_rule({"id": "b", "name": "B", "targets": ["Z1"],
+                         "periods": [{"time": "06:00", "action": {"mode": "Off"}}]})
+        desired, conflicts = self.s.resolve_desired(["Z1"])
+        self.assertNotIn("Z1", desired, "a genuine tie is not applied")
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual(conflicts[0]["zone"], "Z1")
+        self.assertEqual(sorted(conflicts[0]["programs"]), ["A", "B"])
+
+    def test_specific_and_all_at_same_time_conflict(self):
+        self.s.add_rule({"id": "all", "name": "Base", "targets": "all",
+                         "periods": [{"time": "06:00", "action": {"mode": "Off"}}]})
+        self.s.add_rule({"id": "arc", "name": "Arcade", "targets": ["Z1"],
+                         "periods": [{"time": "06:00", "action": {"mode": "Heat", "heatSetpoint": 70}}]})
+        desired, conflicts = self.s.resolve_desired(["Z1", "Z2"])
+        self.assertEqual(desired["Z2"][0].get("mode"), "Off", "Z2 only under the base program")
+        self.assertNotIn("Z1", desired, "Z1 tie between base and specific -> conflict")
+        self.assertEqual([c["zone"] for c in conflicts], ["Z1"])
+
+    def test_apply_all_active_now_arbitrates_with_device_ids(self):
+        # Startup/restore path must not clobber today's program with an off-day one.
+        applied = []
+        s = FacilityScheduler(apply_fn=lambda t, a: applied.append((sorted(t), dict(a))),
+                              store_path=os.path.join(self.tmp.name, "s2.json"),
+                              timezone="America/New_York")
+        s._now = lambda: datetime.datetime(2026, 7, 13, 15, 0)   # Monday
+        s.add_rule({"id": "wd", "days": ["mon", "tue", "wed", "thu", "fri"], "targets": ["Z1"],
+                    "periods": [{"time": "06:00", "action": {"mode": "Heat", "heatSetpoint": 70}}]})
+        s.add_rule({"id": "we", "days": ["sat", "sun"], "targets": ["Z1"],
+                    "periods": [{"time": "08:00", "action": {"mode": "Off"}}]})
+        s.apply_all_active_now(["Z1"])
+        self.assertEqual(applied, [(["Z1"], {"mode": "Heat", "heatSetpoint": 70})],
+                         "only the active-day program is asserted at startup")
+
+
 class Validation(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

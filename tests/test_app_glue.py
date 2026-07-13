@@ -122,7 +122,7 @@ class PostRestoreProgramResume(unittest.TestCase):
     def test_reasserts_active_periods_after_restore(self):
         calls = []
         class FakeScheduler:
-            def apply_all_active_now(self):
+            def apply_all_active_now(self, all_device_ids=None):
                 calls.append("asserted")
         app_mod.scheduler = FakeScheduler()
         app_mod.on_zones_restored(["Z1", "Z2"])
@@ -131,7 +131,7 @@ class PostRestoreProgramResume(unittest.TestCase):
 
     def test_scheduler_failure_is_alerted_not_raised(self):
         class FailingScheduler:
-            def apply_all_active_now(self):
+            def apply_all_active_now(self, all_device_ids=None):
                 raise RuntimeError("boom")
         app_mod.scheduler = FailingScheduler()
         app_mod.on_zones_restored(["Z1"])   # must not raise
@@ -428,6 +428,83 @@ class ScheduleEnforcement(unittest.TestCase):
                                                     "thermostatSetpointStatus": "PermanentHold"}}], 1)
         app_mod._enforce_schedules()
         self.assertEqual(self.applied, [], "an offline zone can't be corrected")
+
+
+class EnforcementArbitration(unittest.TestCase):
+    """The reported bug: a weekday + weekend program on the same zone must not
+    fight. Enforcement applies only the program in effect today; a genuine
+    same-time disagreement is left alone (not guessed)."""
+
+    def _setup(self, programs, now):
+        import datetime
+        from scheduler import FacilityScheduler
+        self._orig = (app_mod.scheduler, app_mod.engine, app_mod.store, app_mod.client,
+                      app_mod.apply_schedule_action, app_mod.notify, app_mod._load_schedule_enforce)
+        self._tmp = tempfile.TemporaryDirectory()
+
+        class FakeClient:
+            is_authorized = True
+        app_mod.client = FakeClient()
+        app_mod.engine = FakeEngine(set())
+        self.notes = []
+        app_mod.notify = lambda sev, kind, msg: self.notes.append((kind, msg))
+        app_mod._load_schedule_enforce = lambda: True
+        self.applied = []
+        app_mod.apply_schedule_action = (lambda targets, action:
+                                         self.applied.append((sorted(targets), dict(action))) or [])
+
+        store = StateStore()
+        store.ingest([{"deviceID": "Z1", "name": "Zone 1", "isAlive": True,
+                       "changeableValues": {"mode": "Cool", "heatSetpoint": 50, "coolSetpoint": 90,
+                                            "thermostatSetpointStatus": "NoHold"}}], 1)
+        app_mod.store = store
+
+        sched = FacilityScheduler(apply_fn=lambda t, a: None,
+                                  store_path=os.path.join(self._tmp.name, "s.json"),
+                                  timezone="America/New_York")
+        sched._now = lambda: now
+        for p in programs:
+            sched.add_rule(p)
+        app_mod.scheduler = sched
+
+    def tearDown(self):
+        (app_mod.scheduler, app_mod.engine, app_mod.store, app_mod.client,
+         app_mod.apply_schedule_action, app_mod.notify, app_mod._load_schedule_enforce) = self._orig
+        self._tmp.cleanup()
+
+    def test_weekday_wins_over_weekend_on_a_weekday(self):
+        import datetime
+        monday_3pm = datetime.datetime(2026, 7, 13, 15, 0)   # a Monday
+        self._setup([
+            {"id": "weekday", "days": ["mon", "tue", "wed", "thu", "fri"], "targets": ["Z1"],
+             "periods": [{"time": "06:00", "action": {"mode": "Heat", "heatSetpoint": 70}},
+                         {"time": "22:00", "action": {"mode": "Off"}}]},
+            {"id": "weekend", "days": ["sat", "sun"], "targets": ["Z1"],
+             "periods": [{"time": "08:00", "action": {"mode": "Heat", "heatSetpoint": 64}},
+                         {"time": "23:00", "action": {"mode": "Off"}}]},
+        ], monday_3pm)
+        app_mod._enforce_schedules()
+        self.assertEqual(len(self.applied), 1, "only the active-day program is applied")
+        targets, action = self.applied[0]
+        self.assertEqual(targets, ["Z1"])
+        self.assertEqual((action.get("mode"), action.get("heatSetpoint")), ("Heat", 70),
+                         "the weekend 'Off' must NOT be applied on a weekday")
+        self.assertFalse([k for k, _ in self.notes if k == "schedule_conflict"])
+
+    def test_genuine_same_time_conflict_is_skipped_and_warned(self):
+        import datetime
+        app_mod._last_conflict_zones = frozenset()   # reset debounce
+        monday_3pm = datetime.datetime(2026, 7, 13, 15, 0)
+        self._setup([
+            {"id": "a", "name": "A", "targets": ["Z1"],
+             "periods": [{"time": "06:00", "action": {"mode": "Heat", "heatSetpoint": 70}}]},
+            {"id": "b", "name": "B", "targets": ["Z1"],
+             "periods": [{"time": "06:00", "action": {"mode": "Off"}}]},
+        ], monday_3pm)
+        app_mod._enforce_schedules()
+        self.assertEqual(self.applied, [], "a genuine tie must not be guessed/applied")
+        self.assertTrue([k for k, _ in self.notes if k == "schedule_conflict"],
+                        "the conflict must be surfaced to the operator")
 
 
 class GroupEndpoints(unittest.TestCase):
