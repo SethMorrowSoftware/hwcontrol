@@ -358,6 +358,25 @@ enforcement on, a manual one-off change to a program-covered zone (from the
 dashboard, the wall, or Resideo) is reverted on the next update; disable enforcement
 or the program if you want a manual override to stick.
 
+**Schedule readout (which schedule is in effect).** Every zone card on the main page
+shows a line naming the program governing that zone right now, what it should be set
+to, and whether the zone is actually following it — computed with the **same
+arbitration** the enforcer uses, so what you see is exactly what enforcement would
+act on:
+
+- **Following *Program* · Cool 68°** (green) — the zone matches its program.
+- **Off‑schedule** (amber) — the zone was changed at the wall or in Resideo; with
+  enforcement on the line reads "correcting to …" and the next update sets it back.
+- **No program covers this zone** (grey) — nothing is scheduled for it right now.
+- **Schedule conflict: *A, B*** (red) — two programs set it differently at the same
+  time, so the app leaves it alone; fix the overlap in Schedules.
+- **Outage control — schedule paused** (blue) — under an active generator rotation;
+  its program resumes when utility power returns.
+
+A summary above the grid tallies how many zones are **on schedule**, **off‑schedule**,
+and **in conflict**. The same data is available programmatically at
+`GET /api/schedule_status`.
+
 ---
 
 ## Automations — the rule model
