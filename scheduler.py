@@ -359,6 +359,28 @@ class FacilityScheduler:
         for rid in ids:
             self.apply_active_now(rid)
 
+    def active_assertions(self) -> list[tuple[Any, dict]]:
+        """For every enabled program that has a currently-active period, return
+        (targets, action) — what the schedule says those zones should be right
+        now. The poller's optional 'enforce schedules' pass uses this to detect
+        and correct zones that drifted (a change at the thermostat or in the
+        Resideo app). Read-only: it applies nothing itself."""
+        with self._lock:
+            rules = [dict(r) for r in self._rules.values() if r.get("enabled", True)]
+        now = self._now()
+        out: list[tuple[Any, dict]] = []
+        for rule in rules:
+            try:
+                period = self._active_period(rule, now)
+            except ValueError:
+                continue
+            if not period:
+                continue
+            action = dict(period.get("action") or {})
+            if action:
+                out.append((rule.get("targets", "all"), action))
+        return out
+
     # ------------------------------------------------------------ persistence
 
     def _load(self) -> None:

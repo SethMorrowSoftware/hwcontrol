@@ -110,6 +110,14 @@ class Config:
     # overrides this startup default.
     SOLE_CONTROLLER = _bool("SOLE_CONTROLLER", True)
 
+    # --- Schedule enforcement ---
+    # When on, every poll re-checks each program-covered zone against what its
+    # schedule says right now and corrects any that drifted (someone changed the
+    # temp at the thermostat or in the Resideo app). Off by default; toggle it
+    # live from the dashboard (persisted). Distinct from Sole Controller: that
+    # holds a zone at its current values, this forces the PROGRAM's values back.
+    SCHEDULE_ENFORCE = _bool("SCHEDULE_ENFORCE", False)
+
     # --- Server ---
     # Default port is 8010 (not 8000) so this can run on the same host as the
     # GenWatch generator monitor, which listens on 8000.
@@ -139,7 +147,7 @@ class Config:
             )
         # Make the resolved safety-critical flags visible at startup so a silent
         # misconfiguration (e.g. Sole Controller unexpectedly off) is obvious.
-        log.info("Config: SOLE_CONTROLLER=%s MQTT_ENABLED=%s POLL_INTERVAL_SECONDS=%s PORT=%s "
-                 "SCHEDULE_TZ=%s",
-                 cls.SOLE_CONTROLLER, cls.MQTT_ENABLED, cls.POLL_INTERVAL_SECONDS, cls.PORT,
-                 cls.SCHEDULE_TZ or "(server local time)")
+        log.info("Config: SOLE_CONTROLLER=%s SCHEDULE_ENFORCE=%s MQTT_ENABLED=%s "
+                 "POLL_INTERVAL_SECONDS=%s PORT=%s SCHEDULE_TZ=%s",
+                 cls.SOLE_CONTROLLER, cls.SCHEDULE_ENFORCE, cls.MQTT_ENABLED,
+                 cls.POLL_INTERVAL_SECONDS, cls.PORT, cls.SCHEDULE_TZ or "(server local time)")
