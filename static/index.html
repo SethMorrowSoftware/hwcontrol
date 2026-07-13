@@ -309,6 +309,24 @@
   .meta .m.src-app{color:var(--ok)}
   .meta .m.src-temp{color:var(--accent)}
   .meta .m.src-onboard{color:var(--warn)}
+  /* per-zone schedule readout: which program governs this zone right now and
+     whether it's actually following it. Uses the SAME arbitration the enforcer
+     uses (resolve_desired), so what's shown is what enforcement would act on. */
+  .schedrow{display:flex;align-items:center;gap:7px;margin:0 0 13px;padding:7px 10px;
+    font-size:11.5px;font-weight:600;line-height:1.35;border-radius:var(--r-sm);
+    border:1px solid var(--border);background:var(--surface-2);color:var(--muted);cursor:help}
+  .schedrow svg{width:14px;height:14px;flex:none}
+  .schedrow .stxt{min-width:0}
+  .schedrow b{font-weight:700;color:inherit}
+  .st-on_target{background:var(--ok-soft);border-color:var(--ok);color:var(--ok)}
+  .st-drifted{background:var(--warn-soft);border-color:var(--warn);color:var(--warn)}
+  .st-conflict{background:var(--crit-soft);border-color:var(--crit);color:var(--crit)}
+  .st-rotating{background:var(--surface-3);border-color:var(--accent);color:var(--accent-text)}
+  .st-unscheduled,.st-offline{color:var(--faint)}
+  /* fleet schedule summary chip above the grid */
+  .zs.sched{cursor:help}
+  .zs.sched.ok b{color:var(--ok)} .zs.sched.warn b{color:var(--warn)}
+  .zs.sched.crit b{color:var(--crit)}
 
   .modes{display:flex;gap:0;margin-bottom:14px;background:var(--inset);border:1px solid var(--border);
     border-radius:var(--r-sm);padding:3px}
@@ -961,7 +979,9 @@ const qp = TOKEN ? ("?token="+encodeURIComponent(TOKEN)) : "";
 
 const state = { devices:[], pending:{}, autoStatus:{}, loaded:false, status:null,
   soleControl:true, scheduleEnforce:false, zoneQuery:"", alerts:[], alertFilter:"all",
-  bulkSel:new Set(), groups:[] };
+  bulkSel:new Set(), groups:[],
+  // schedule readout: {zones:{id:{state,program,summary,programs}}, counts, enforce}
+  sched:{zones:{}, counts:{}, enforce:false} };
 
 /* ---------- inline icons ---------- */
 const IC = {
@@ -975,6 +995,7 @@ const IC = {
   thermo:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 14.76V5a2 2 0 0 0-4 0v9.76a4 4 0 1 0 4 0z"/></svg>',
   plug:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>',
   inbox:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>',
+  cal:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>',
   bolt:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
   sun:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>',
   moon:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>'
@@ -1279,6 +1300,42 @@ function zoneActivity(d){
   if(m==="auto") return {t:(idle?"Idle · Auto ":"Auto ")+fmtT(d.heatSetpoint)+"–"+fmtT(d.coolSetpoint),cls:idle?"":"auto",live:false,tip:tip};
   return null;
 }
+/* The per-zone schedule readout on each card: which program governs this zone
+   right now, what it should be, and whether the zone is actually following it.
+   Reads state.sched (from /api/schedule_status), which uses the same per-zone
+   arbitration the enforcer uses - so the card shows exactly what enforcement
+   would do, never a second opinion. Returns {t (HTML), cls, tip} or null. */
+function scheduleLine(d){
+  const s=state.sched.zones[d.deviceID];
+  if(!s) return null;
+  const enforce=!!state.sched.enforce;
+  const prog=s.program?`<b>${esc(s.program)}</b>`:"";
+  const sum=s.summary?esc(s.summary):"";
+  switch(s.state){
+    case "on_target": return {ic:IC.ok, cls:"st-on_target",
+      t:`Following ${prog} · ${sum}`,
+      tip:`This zone matches its program (${s.program}) right now — it's on schedule.`};
+    case "drifted": return {ic:IC.warning, cls:"st-drifted",
+      t: enforce ? `Off‑schedule — correcting to ${sum} ${prog}`
+                 : `Off‑schedule · ${prog} wants ${sum}`,
+      tip: enforce
+        ? `Someone changed this zone at the thermostat or in Resideo. Enforce schedules is ON, so the next update sets it back to ${s.program}.`
+        : `This zone doesn't match its program (${s.program}). Turn on “Enforce schedules” to have the app correct it automatically.`};
+    case "conflict": return {ic:IC.err, cls:"st-conflict",
+      t:`Schedule conflict: <b>${esc((s.programs||[]).join(", "))}</b>`,
+      tip:`Two programs set this zone differently at the same time, so the app leaves it alone rather than guess. Fix the overlap in Schedules.`};
+    case "rotating": return {ic:IC.bolt, cls:"st-rotating",
+      t:`Outage control — schedule paused ${prog}`,
+      tip:`This zone is under an active generator rotation. Its program (${s.program}) resumes when utility power returns.`};
+    case "offline": return {ic:IC.cal, cls:"st-offline",
+      t:`Offline · ${prog} wants ${sum}`,
+      tip:`A program covers this zone, but Honeywell can't reach it right now to confirm or apply the schedule.`};
+    case "unscheduled": return {ic:IC.cal, cls:"st-unscheduled",
+      t:`No program covers this zone`,
+      tip:`No enabled schedule targets this zone right now, so nothing is enforced on it.`};
+  }
+  return null;
+}
 /* Fleet summary chips above the grid: totals, reachability, and mode mix. */
 function renderZoneSummary(){
   const tb=document.getElementById("zoneToolbar"), sum=document.getElementById("zoneSummary");
@@ -1301,6 +1358,16 @@ function renderZoneSummary(){
     const c=ds.filter(d=>(d.mode||"").toLowerCase()===k).length;
     if(c) bits.push(`<span class="zs" title="${c} zone${c===1?'':'s'} set to ${label}"><span class="sw" style="background:var(${v})"></span><b>${c}</b>&nbsp;${label}</span>`);
   }
+  // Schedule posture: how many zones are following their program right now vs
+  // off-schedule or in conflict (same per-zone arbitration the enforcer uses).
+  const sc=state.sched.counts||{};
+  const onT=sc.on_target||0, dr=sc.drifted||0, cf=sc.conflict||0;
+  const enfTip=state.sched.enforce
+    ? "“Enforce schedules” is ON — off-schedule zones are corrected each update."
+    : "“Enforce schedules” is OFF — off-schedule zones are shown here but not corrected.";
+  if(onT) bits.push(`<span class="zs sched ok" title="Zones matching their program right now. ${enfTip}"><b>${onT}</b>&nbsp;on schedule</span>`);
+  if(dr) bits.push(`<span class="zs sched warn" title="Zones that don't match their program (changed at the thermostat or in Resideo). ${enfTip}"><b>${dr}</b>&nbsp;off‑schedule</span>`);
+  if(cf) bits.push(`<span class="zs sched crit" title="Zones left alone because two programs set them differently at the same time — fix the overlap in Schedules."><b>${cf}</b>&nbsp;conflict${cf===1?'':'s'}</span>`);
   // One freshness chip, from the last SUCCESSFUL Honeywell update (server time),
   // coarse-grained so it doesn't tick second-by-second or reset every browser fetch.
   const okTs=(state.status||{}).last_ok_poll_ts||(state.status||{}).last_poll_ts;
@@ -1402,13 +1469,15 @@ async function applyBulk(btn){
 function zoneSig(shown){
   return JSON.stringify((shown||[]).map(d=>{
     const p=state.pending[d.deviceID]||{};
+    const sc=state.sched.zones[d.deviceID]||{};
     return [d.deviceID,d.name,d.online,d.indoorTemperature,d.indoorHumidity,d.outdoorTemperature,
       d.mode,d.heatSetpoint,d.coolSetpoint,d.setpointStatus,d.equipmentStatus,
       d.fanMode,d.fanRunning,d.fanRequest,d.circulationFanRequest,
       (d.allowedModes||[]).join(","),(d.allowedFanModes||[]).join(","),
       p.mode,p.heat,p.cool,p.hold,p.fan,p.dirty?[...p.dirty].sort().join(","):"",
-      state.bulkSel.has(d.deviceID)];
-  }))+"|"+state.soleControl+"|"+state.zoneQuery;
+      state.bulkSel.has(d.deviceID),
+      sc.state,sc.program,sc.summary,(sc.programs||[]).join(",")];
+  }))+"|"+state.soleControl+"|"+state.zoneQuery+"|"+state.sched.enforce;
 }
 function renderZones(fromPoll){
   const grid=document.getElementById("zoneGrid");
@@ -1483,6 +1552,8 @@ function renderZones(fromPoll){
     const src = controlSource(d);
     if(src) meta.push(`<span class="m src ${src.cls}" title="${esc(src.tip)}">${esc(src.t)}</span>`);
     const act=zoneActivity(d);
+    const sl=scheduleLine(d);
+    const schedRow=sl?`<div class="schedrow ${sl.cls}" title="${esc(sl.tip)}">${sl.ic}<span class="stxt">${sl.t}</span></div>`:'';
     const fans=d.allowedFanModes||[];
     const fanRow=fans.length?`
       <div class="fanrow"><span class="fanlbl">Fan</span>
@@ -1501,6 +1572,7 @@ function renderZones(fromPoll){
         </div>
         <div class="meta">${meta.join("<br>")||"&nbsp;"}</div>
       </div>
+      ${schedRow}
       <div class="modes" role="group" aria-label="Mode for ${esc(d.name)}">${modes.map(m=>
         `<button class="chip ${p.mode===m?'sel':''}" data-mode="${esc(m)}" aria-pressed="${p.mode===m}"${dis} onclick="setMode('${did}','${jsAttr(m)}')">${esc(m)}</button>`).join("")}</div>
       <div class="sp">
@@ -1584,6 +1656,17 @@ async function loadDevices(){
     if(!state.loaded){ state.loaded=true; renderZones(); }
     updateHealthBanner();
   }
+}
+
+/* Which program governs each zone right now, and whether the zone is following
+   it — powers the per-card schedule readout and the fleet summary chip. */
+async function loadScheduleStatus(){
+  try{
+    const r=await api("/api/schedule_status");
+    state.sched={zones:r.zones||{}, counts:r.counts||{}, enforce:!!r.enforce,
+                 conflicts:r.conflicts||[]};
+    if(state.loaded) renderZones(true);   // guarded rebuild; also refreshes summary
+  }catch(e){ /* transient; the next poll retries and the old readout stays put */ }
 }
 
 /* ---------- schedules (daily programs) ---------- */
@@ -2552,7 +2635,8 @@ function tick(){
 let pollBusy=false;
 async function pollCycle(){
   if(pollBusy) return; pollBusy=true;
-  try{ await Promise.allSettled([refreshStatus(),loadDevices(),loadAlerts(),loadAutomations(true)]); }
+  try{ await Promise.allSettled([refreshStatus(),loadDevices(),loadScheduleStatus(),
+                                 loadAlerts(),loadAutomations(true)]); }
   finally{ pollBusy=false; }
 }
 
@@ -2565,7 +2649,7 @@ resetAutoForm();          // one blank condition + empty actions
 resetGroupForm();         // zone-group form picker
 updateGeneratorPreview(); // seed the outage-plan preview + "listening" line
 tick(); setInterval(tick,15000);
-refreshStatus(); loadDevices(); loadSchedules(); loadAlerts(); loadAutomations(); loadGroups();
+refreshStatus(); loadDevices(); loadScheduleStatus(); loadSchedules(); loadAlerts(); loadAutomations(); loadGroups();
 setInterval(pollCycle, 10000);
 setInterval(()=>{ loadSchedules(true); loadGroups(); }, 30000);
 </script>

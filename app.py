@@ -230,14 +230,24 @@ def _zone_matches_action(zone: dict, action: dict) -> bool:
 
 
 def _action_summary(action: dict) -> str:
-    """Short human description of what a program period sets (for alerts)."""
-    bits = []
-    if action.get("mode"):
-        bits.append(action["mode"])
-    if action.get("heatSetpoint") is not None:
-        bits.append(f"Heat {action['heatSetpoint']}°")
-    if action.get("coolSetpoint") is not None:
-        bits.append(f"Cool {action['coolSetpoint']}°")
+    """Short human description of what a program period sets, for alerts and the
+    schedule readout. The setpoint labels ("Heat 68°") already name the mode, so
+    we don't repeat it - "Cool 68°", not "Cool Cool 68°"."""
+    mode = action.get("mode")
+    heat, cool = action.get("heatSetpoint"), action.get("coolSetpoint")
+    if mode == "Off":
+        return "Off"
+    if mode == "Heat":
+        return f"Heat {heat}°" if heat is not None else "Heat"
+    if mode == "Cool":
+        return f"Cool {cool}°" if cool is not None else "Cool"
+    if mode == "Auto":
+        span = [f"{v}°" for v in (heat, cool) if v is not None]
+        return "Auto " + "–".join(span) if span else "Auto"
+    # No/unknown mode: just show whatever setpoints the period specifies.
+    bits = ([mode] if mode else []) + \
+           ([f"Heat {heat}°"] if heat is not None else []) + \
+           ([f"Cool {cool}°"] if cool is not None else [])
     return " ".join(bits) or "(no change)"
 
 
@@ -308,6 +318,69 @@ def _enforce_schedules() -> None:
         log.exception("Schedule enforcement pass failed: %s", exc)
     finally:
         _schedule_enforce_lock.release()
+
+
+def _schedule_snapshot() -> dict:
+    """A per-zone read-only view of what the programs say right now, for the
+    dashboard's "which schedule is in effect?" readout. Uses the SAME per-zone
+    arbitration as enforcement (resolve_desired) so what the operator sees is
+    exactly what enforcement would act on - never a second, divergent opinion.
+
+    Returns:
+      {enforce, server_time, timezone,
+       zones: {deviceID: {state, program?, summary?, programs?}},
+       counts: {on_target, drifted, unscheduled, conflict, rotating, offline},
+       conflicts: [{zone, programs}]}
+
+    Per-zone `state` is one of:
+      on_target   - the zone already matches its program (following the schedule)
+      drifted     - a program covers it but the live values differ (someone
+                    changed it at the thermostat / in Resideo); with enforcement
+                    on, the next poll corrects it
+      unscheduled - no enabled program covers this zone right now
+      conflict    - two programs set it differently at the same boundary; left alone
+      rotating    - under an active generator rotation (outage control) - schedule
+                    writes are deferred until utility power returns
+      offline     - a program covers it but Honeywell can't reach it to confirm/apply
+    """
+    enforce = _load_schedule_enforce()
+    base = {"enforce": enforce, "server_time": _local_now_str(),
+            "timezone": scheduler.timezone_name() if scheduler else None,
+            "zones": {}, "conflicts": [],
+            "counts": {k: 0 for k in ("on_target", "drifted", "unscheduled",
+                                      "conflict", "rotating", "offline")}}
+    if scheduler is None:
+        return base
+    ids = store.all_device_ids()
+    desired, conflicts = scheduler.resolve_desired(ids)
+    conflict_programs = {c["zone"]: c["programs"] for c in conflicts}
+    active_rot = engine.active_rotation_targets() if engine else set()
+    zones = base["zones"]
+    counts = base["counts"]
+    for zid in ids:
+        if zid in conflict_programs:
+            zones[zid] = {"state": "conflict", "programs": conflict_programs[zid]}
+            counts["conflict"] += 1
+            continue
+        if zid not in desired:
+            zones[zid] = {"state": "unscheduled"}
+            counts["unscheduled"] += 1
+            continue
+        action, prog = desired[zid]
+        entry = {"program": prog, "summary": _action_summary(action)}
+        z = store.get(zid) or {}
+        if zid in active_rot:
+            entry["state"] = "rotating"
+        elif not z.get("online"):
+            entry["state"] = "offline"
+        elif _zone_matches_action(z, action):
+            entry["state"] = "on_target"
+        else:
+            entry["state"] = "drifted"
+        counts[entry["state"]] += 1
+        zones[zid] = entry
+    base["conflicts"] = conflicts
+    return base
 
 
 def _is_held(device: dict) -> bool:
@@ -873,6 +946,13 @@ def api_status():
         # Live control-mode flags so the dashboard's toggles reflect the real state.
         "schedule_enforce": _load_schedule_enforce(),
     }
+
+
+@app.get("/api/schedule_status")
+def api_schedule_status():
+    """What each zone's programs say right now, and whether the zone is following
+    them - powers the dashboard's per-zone schedule readout."""
+    return _schedule_snapshot()
 
 
 @app.get("/api/devices")

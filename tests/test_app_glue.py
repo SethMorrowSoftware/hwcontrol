@@ -507,6 +507,101 @@ class EnforcementArbitration(unittest.TestCase):
                         "the conflict must be surfaced to the operator")
 
 
+class ScheduleSnapshotReadout(unittest.TestCase):
+    """_schedule_snapshot() reports, per zone, which program is in effect and
+    whether the zone is following it - the data behind the dashboard readout.
+    It must use the SAME arbitration as enforcement, so what the operator sees
+    is exactly what enforcement would act on."""
+
+    def setUp(self):
+        import datetime
+        from scheduler import FacilityScheduler
+        self._orig = (app_mod.scheduler, app_mod.engine, app_mod.store,
+                      app_mod._load_schedule_enforce)
+        self._tmp = tempfile.TemporaryDirectory()
+        app_mod.engine = FakeEngine({"Z6"})            # Z6 under an active rotation
+        app_mod._load_schedule_enforce = lambda: True
+
+        store = StateStore()
+        store.ingest([
+            {"deviceID": "Z1", "name": "Zone 1", "isAlive": True,
+             "changeableValues": {"mode": "Heat", "heatSetpoint": 68, "coolSetpoint": 76,
+                                  "thermostatSetpointStatus": "PermanentHold"}},   # matches -> on_target
+            {"deviceID": "Z2", "name": "Zone 2", "isAlive": True,
+             "changeableValues": {"mode": "Heat", "heatSetpoint": 70, "coolSetpoint": 76,
+                                  "thermostatSetpointStatus": "PermanentHold"}},   # 70 != 68 -> drifted
+            {"deviceID": "Z3", "name": "Zone 3", "isAlive": True,
+             "changeableValues": {"mode": "Off"}},                                 # no program -> unscheduled
+            {"deviceID": "Z4", "name": "Zone 4", "isAlive": True,
+             "changeableValues": {"mode": "Cool"}},                                # two programs -> conflict
+            {"deviceID": "Z5", "name": "Zone 5", "isAlive": False,
+             "changeableValues": {"mode": "Heat", "heatSetpoint": 70,
+                                  "thermostatSetpointStatus": "PermanentHold"}},   # offline
+            {"deviceID": "Z6", "name": "Zone 6", "isAlive": True,
+             "changeableValues": {"mode": "Off"}},                                 # rotating
+        ], 1)
+        app_mod.store = store
+
+        sched = FacilityScheduler(apply_fn=lambda t, a: None,
+                                  store_path=os.path.join(self._tmp.name, "s.json"),
+                                  timezone="America/New_York")
+        sched._now = lambda: datetime.datetime(2026, 7, 13, 15, 0)   # a Monday
+        act = {"mode": "Heat", "heatSetpoint": 68, "thermostatSetpointStatus": "PermanentHold"}
+        sched.add_rule({"id": "match",  "targets": ["Z1"], "periods": [{"time": "00:00", "action": act}]})
+        sched.add_rule({"id": "drift",  "targets": ["Z2"], "periods": [{"time": "00:00", "action": act}]})
+        sched.add_rule({"id": "away",   "targets": ["Z5"], "periods": [{"time": "00:00", "action": act}]})
+        sched.add_rule({"id": "rot",    "targets": ["Z6"],
+                        "periods": [{"time": "00:00", "action": {"mode": "Heat", "heatSetpoint": 66}}]})
+        sched.add_rule({"id": "a", "name": "A", "targets": ["Z4"],
+                        "periods": [{"time": "00:00", "action": {"mode": "Heat", "heatSetpoint": 70}}]})
+        sched.add_rule({"id": "b", "name": "B", "targets": ["Z4"],
+                        "periods": [{"time": "00:00", "action": {"mode": "Off"}}]})
+        app_mod.scheduler = sched
+
+    def tearDown(self):
+        (app_mod.scheduler, app_mod.engine, app_mod.store,
+         app_mod._load_schedule_enforce) = self._orig
+        self._tmp.cleanup()
+
+    def test_every_state_is_reported(self):
+        snap = app_mod._schedule_snapshot()
+        z = snap["zones"]
+        self.assertEqual(z["Z1"]["state"], "on_target")
+        self.assertEqual(z["Z1"]["program"], "match")
+        self.assertEqual(z["Z2"]["state"], "drifted")
+        self.assertIn("68", z["Z2"]["summary"])
+        self.assertEqual(z["Z3"]["state"], "unscheduled")
+        self.assertEqual(z["Z4"]["state"], "conflict")
+        self.assertEqual(sorted(z["Z4"]["programs"]), ["A", "B"])
+        self.assertEqual(z["Z5"]["state"], "offline")
+        self.assertEqual(z["Z6"]["state"], "rotating")
+
+    def test_counts_and_enforce_flag(self):
+        snap = app_mod._schedule_snapshot()
+        self.assertTrue(snap["enforce"])
+        self.assertEqual(snap["counts"],
+                         {"on_target": 1, "drifted": 1, "unscheduled": 1,
+                          "conflict": 1, "rotating": 1, "offline": 1})
+        self.assertEqual([c["zone"] for c in snap["conflicts"]], ["Z4"])
+        self.assertIn("New_York", snap["timezone"])
+
+    def test_snapshot_matches_what_enforcement_would_do(self):
+        # The zones the snapshot calls "drifted" are exactly the online, non-rotating
+        # zones enforcement would correct - never a divergent second opinion.
+        snap = app_mod._schedule_snapshot()
+        drifted = {zid for zid, e in snap["zones"].items() if e["state"] == "drifted"}
+        desired, _ = app_mod.scheduler.resolve_desired(app_mod.store.all_device_ids())
+        rot = app_mod.engine.active_rotation_targets()
+        would_correct = set()
+        for zid, (action, _p) in desired.items():
+            zdev = app_mod.store.get(zid)
+            if zid in rot or not zdev or not zdev.get("online"):
+                continue
+            if not app_mod._zone_matches_action(zdev, action):
+                would_correct.add(zid)
+        self.assertEqual(drifted, would_correct)
+
+
 class GroupEndpoints(unittest.TestCase):
     """The /api/groups CRUD wrappers surface store errors as HTTP 400/404."""
 
