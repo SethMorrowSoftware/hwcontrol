@@ -358,6 +358,78 @@ class PollPartialHealth(unittest.TestCase):
                       "reap must be skipped for the location that went transiently empty")
 
 
+class ScheduleEnforcement(unittest.TestCase):
+    """When enforcement is on, a program-covered zone that drifted from what its
+    schedule says is corrected; a matching zone, a rotated zone, and the
+    disabled state are all left alone."""
+
+    def setUp(self):
+        from scheduler import FacilityScheduler
+        self._orig = (app_mod.scheduler, app_mod.engine, app_mod.store, app_mod.client,
+                      app_mod.apply_schedule_action, app_mod.notify, app_mod._load_schedule_enforce)
+        self._tmp = tempfile.TemporaryDirectory()
+
+        class FakeClient:
+            is_authorized = True
+        app_mod.client = FakeClient()
+        app_mod.engine = FakeEngine(set())
+        app_mod.notify = lambda *a: None
+        app_mod._load_schedule_enforce = lambda: True
+        self.applied = []
+        app_mod.apply_schedule_action = (lambda targets, action:
+                                         self.applied.append((list(targets), dict(action))) or [])
+
+        store = StateStore()
+        store.ingest([{"deviceID": "Z1", "name": "Zone 1", "isAlive": True,
+                       "changeableValues": {"mode": "Heat", "heatSetpoint": 70, "coolSetpoint": 76,
+                                            "thermostatSetpointStatus": "PermanentHold"}}], 1)
+        app_mod.store = store
+
+        sched = FacilityScheduler(apply_fn=lambda t, a: None,
+                                  store_path=os.path.join(self._tmp.name, "s.json"))
+        sched.add_rule({"id": "p", "targets": ["Z1"],
+                        "periods": [{"time": "00:00",
+                                     "action": {"mode": "Heat", "heatSetpoint": 68,
+                                                "thermostatSetpointStatus": "PermanentHold"}}]})
+        app_mod.scheduler = sched
+
+    def tearDown(self):
+        (app_mod.scheduler, app_mod.engine, app_mod.store, app_mod.client,
+         app_mod.apply_schedule_action, app_mod.notify, app_mod._load_schedule_enforce) = self._orig
+        self._tmp.cleanup()
+
+    def test_corrects_drifted_zone(self):
+        app_mod._enforce_schedules()   # Z1 is Heat 70, program wants Heat 68 -> drift
+        self.assertEqual(len(self.applied), 1)
+        targets, action = self.applied[0]
+        self.assertEqual(targets, ["Z1"])
+        self.assertEqual(action.get("heatSetpoint"), 68)
+
+    def test_no_correction_when_already_matching(self):
+        app_mod.store.ingest([{"deviceID": "Z1", "name": "Zone 1", "isAlive": True,
+                               "changeableValues": {"mode": "Heat", "heatSetpoint": 68, "coolSetpoint": 76,
+                                                    "thermostatSetpointStatus": "PermanentHold"}}], 1)
+        app_mod._enforce_schedules()
+        self.assertEqual(self.applied, [], "a zone already on its program costs no writes")
+
+    def test_noop_when_disabled(self):
+        app_mod._load_schedule_enforce = lambda: False
+        app_mod._enforce_schedules()
+        self.assertEqual(self.applied, [])
+
+    def test_skips_rotated_zone(self):
+        app_mod.engine = FakeEngine({"Z1"})
+        app_mod._enforce_schedules()
+        self.assertEqual(self.applied, [], "a zone under an active rotation is not corrected")
+
+    def test_skips_offline_zone(self):
+        app_mod.store.ingest([{"deviceID": "Z1", "name": "Zone 1", "isAlive": False,
+                               "changeableValues": {"mode": "Heat", "heatSetpoint": 70,
+                                                    "thermostatSetpointStatus": "PermanentHold"}}], 1)
+        app_mod._enforce_schedules()
+        self.assertEqual(self.applied, [], "an offline zone can't be corrected")
+
+
 class GroupEndpoints(unittest.TestCase):
     """The /api/groups CRUD wrappers surface store errors as HTTP 400/404."""
 

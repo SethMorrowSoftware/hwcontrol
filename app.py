@@ -177,6 +177,99 @@ def _save_sole_control(enabled: bool) -> None:
         log.error("Could not persist sole-control setting: %s", exc)
 
 
+# ---------------------------------------------- schedule enforcement (anti-tamper)
+# When on, each poll re-checks every program-covered zone against what its
+# schedule says right now and corrects the ones that drifted (someone changed the
+# temp at the thermostat or in the Resideo app). It's drift-aware: a zone that
+# already matches its program is left alone, so a steady state costs no API calls.
+# Zones under an active generator rotation are skipped (via apply_schedule_action).
+
+SCHEDULE_ENFORCE_FILE = Path("schedule_enforce.json")
+_schedule_enforce_lock = threading.Lock()   # single-flights an enforcement pass
+
+
+def _load_schedule_enforce() -> bool:
+    data = load_json(SCHEDULE_ENFORCE_FILE)
+    if isinstance(data, dict) and "enabled" in data:
+        return bool(data.get("enabled"))
+    return Config.SCHEDULE_ENFORCE
+
+
+def _save_schedule_enforce(enabled: bool) -> None:
+    try:
+        atomic_write_json(SCHEDULE_ENFORCE_FILE, {"enabled": bool(enabled)})
+    except OSError as exc:
+        log.error("Could not persist schedule-enforce setting: %s", exc)
+
+
+def _num(v: Any) -> Optional[float]:
+    if isinstance(v, bool) or v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _zone_matches_action(zone: dict, action: dict) -> bool:
+    """True if the zone's current state already matches what a program period
+    says. Only the fields the action specifies are compared, so an unrelated
+    field never triggers a needless correction."""
+    if "mode" in action and (zone.get("mode") or "") != action["mode"]:
+        return False
+    for field in ("heatSetpoint", "coolSetpoint"):
+        if field in action:
+            want = _num(action[field])
+            if want is not None and _num(zone.get(field)) != want:
+                return False
+    if "thermostatSetpointStatus" in action:
+        if (zone.get("setpointStatus") or "") != action["thermostatSetpointStatus"]:
+            return False
+    return True
+
+
+def _enforce_schedules() -> None:
+    """Correct any online, program-covered zone that has drifted from what its
+    schedule says right now. Single-flighted; skips zones under an active
+    rotation; raises one operator alert per correction batch as a tamper log."""
+    if not _load_schedule_enforce() or scheduler is None or not client.is_authorized:
+        return
+    if not _schedule_enforce_lock.acquire(blocking=False):
+        return
+    try:
+        active_rot = engine.active_rotation_targets() if engine else set()
+        corrected: list[str] = []
+        for targets, action in scheduler.active_assertions():
+            if targets == "all":
+                ids = store.all_device_ids()
+            elif isinstance(targets, str):
+                ids = [targets]
+            else:
+                ids = list(targets)
+            drifted = []
+            for did in ids:
+                if did in active_rot:
+                    continue   # under outage control; apply_schedule_action would skip it anyway
+                z = store.get(did)
+                if not z or not z.get("online"):
+                    continue
+                if not _zone_matches_action(z, action):
+                    drifted.append(did)
+            if drifted:
+                failed = set(apply_schedule_action(drifted, action))
+                corrected.extend(d for d in drifted if d not in failed)
+        if corrected:
+            names = ", ".join(sorted((store.get(d) or {}).get("name") or d for d in corrected))
+            log.info("Schedule enforcement corrected %d zone(s): %s", len(corrected), names)
+            notify("info", "schedule_enforced",
+                   f"Schedule enforcement put {len(corrected)} zone(s) back to their program "
+                   f"(a change was made at the thermostat or in the Resideo app): {names}.")
+    except Exception as exc:
+        log.exception("Schedule enforcement pass failed: %s", exc)
+    finally:
+        _schedule_enforce_lock.release()
+
+
 def _is_held(device: dict) -> bool:
     """True if the app already owns this zone (it's under a permanent hold)."""
     return (device.get("setpointStatus") or "") == "PermanentHold"
@@ -567,6 +660,13 @@ def _poller_loop() -> None:
             _enforce_sole_control()
         except Exception as exc:
             log.exception("Sole-control enforcement failed: %s", exc)
+        # Correct any program-covered zone that drifted from its schedule (a change
+        # at the thermostat or in Resideo). Runs after sole-control so the program's
+        # setpoint values, not just the hold, are what wins.
+        try:
+            _enforce_schedules()
+        except Exception as exc:
+            log.exception("Schedule enforcement failed: %s", exc)
         _poller_stop.wait(Config.POLL_INTERVAL_SECONDS)
 
 
@@ -730,6 +830,8 @@ def api_status():
         # time, so a wrong-timezone misconfig (units firing hours off) is visible.
         "schedule_timezone": scheduler.timezone_name() if scheduler else None,
         "server_time": _local_now_str(),
+        # Live control-mode flags so the dashboard's toggles reflect the real state.
+        "schedule_enforce": _load_schedule_enforce(),
     }
 
 
@@ -873,6 +975,26 @@ def api_sole_control_set(payload: dict = Body(...)):
     notify("info", "sole_control",
            "Sole Controller mode on — the app now holds every zone." if enabled
            else "Sole Controller mode off — zones may follow their onboard schedule.")
+    return {"ok": True, "enabled": enabled}
+
+
+@app.get("/api/schedule_enforce")
+def api_schedule_enforce_get():
+    return {"enabled": _load_schedule_enforce()}
+
+
+@app.post("/api/schedule_enforce")
+def api_schedule_enforce_set(payload: dict = Body(...)):
+    """Turn schedule enforcement on or off (persisted). When on, every poll puts
+    any program-covered zone that drifted back to what its schedule says."""
+    enabled = bool(payload.get("enabled"))
+    _save_schedule_enforce(enabled)
+    if enabled:
+        # Reconcile now rather than waiting for the next poll.
+        threading.Thread(target=_enforce_schedules, daemon=True).start()
+    notify("info", "schedule_enforce",
+           "Schedule enforcement on — zones a program covers are put back to the "
+           "schedule on every update." if enabled else "Schedule enforcement off.")
     return {"ok": True, "enabled": enabled}
 
 

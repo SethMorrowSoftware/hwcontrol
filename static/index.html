@@ -207,6 +207,13 @@
   .banner .b-sub{color:var(--muted);font-size:13px}
 
   /* ============================ zones toolbar ============================ */
+  /* control-mode switch row (schedule enforcement) at the top of the Zones view */
+  .ctrlbar{display:flex;align-items:center;gap:13px;background:var(--surface);
+    border:1px solid var(--border);border-radius:var(--r);padding:12px 16px;margin-bottom:16px;
+    box-shadow:var(--shadow-sm)}
+  .ctrlbar .ctrlbar-txt{min-width:0}
+  .ctrlbar .ctrlbar-title{font-weight:600;font-size:14px}
+  .ctrlbar .ctrlbar-sub{color:var(--muted);font-size:12px;line-height:1.5;margin-top:2px;max-width:88ch}
   .toolbar{display:flex;align-items:center;gap:10px 12px;flex-wrap:wrap;margin-bottom:16px}
   .searchwrap{position:relative;flex:0 1 300px;min-width:220px}
   .searchwrap svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);
@@ -665,6 +672,15 @@
   <div id="pollBanner" role="alert"></div>
 
   <section class="view active" id="view-zones" role="tabpanel" aria-labelledby="tab-zones" tabindex="0">
+    <!-- schedule-enforcement switch: undo rogue changes back to the program every update -->
+    <div class="ctrlbar" id="enforceBar" hidden>
+      <button class="toggle" id="enforceToggle" role="switch" aria-checked="false" aria-label="Enforce schedules" onclick="toggleScheduleEnforce()"></button>
+      <div class="ctrlbar-txt">
+        <div class="ctrlbar-title">Enforce schedules</div>
+        <div class="ctrlbar-sub">On every update, put any zone a program covers back to what its schedule says —
+          undoing changes made at the thermostat or in the Resideo app. Zones under an active outage rotation are left alone.</div>
+      </div>
+    </div>
     <div class="toolbar" id="zoneToolbar" hidden>
       <div class="searchwrap">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -944,7 +960,7 @@ const HDRS = TOKEN ? {"X-Token":TOKEN} : {};
 const qp = TOKEN ? ("?token="+encodeURIComponent(TOKEN)) : "";
 
 const state = { devices:[], pending:{}, autoStatus:{}, loaded:false, status:null,
-  soleControl:true, zoneQuery:"", alerts:[], alertFilter:"all",
+  soleControl:true, scheduleEnforce:false, zoneQuery:"", alerts:[], alertFilter:"all",
   bulkSel:new Set(), groups:[] };
 
 /* ---------- inline icons ---------- */
@@ -1103,6 +1119,14 @@ async function refreshStatus(){
     const mqttStat=document.getElementById("mqttStat");
     if(mqttStat) mqttStat.setAttribute("aria-label",
       "Automation link "+(s.mqtt_connected?"connected":"disconnected"));
+    // Schedule-enforcement switch on the main page reflects the live server state.
+    if(typeof s.schedule_enforce==="boolean"){
+      state.scheduleEnforce=s.schedule_enforce;
+      const eb=document.getElementById("enforceBar"); if(eb) eb.hidden=false;
+      const et=document.getElementById("enforceToggle");
+      if(et && !et.hasAttribute("aria-busy")){
+        et.classList.toggle("on",s.schedule_enforce); et.setAttribute("aria-checked",s.schedule_enforce); }
+    }
     // Freshness reads from the last SUCCESSFUL update (server time), coarse-grained,
     // so it climbs calmly to the poll interval instead of resetting every browser
     // fetch. A failed cycle shows the failure, not a false "just now".
@@ -1781,6 +1805,24 @@ async function toggleSoleControl(){
     if(tg){ tg.classList.toggle("on",!next); tg.setAttribute("aria-checked",!next);
       tg.removeAttribute("aria-busy"); tg.style.pointerEvents=""; }
     toast("Couldn't change mode: "+e.message,true);
+  }
+}
+async function toggleScheduleEnforce(){
+  const next=!state.scheduleEnforce;
+  // Optimistic + busy so the switch responds instantly; refreshStatus reconciles.
+  const t=document.getElementById("enforceToggle");
+  if(t){ t.classList.toggle("on",next); t.setAttribute("aria-checked",next);
+    t.setAttribute("aria-busy","true"); t.style.pointerEvents="none"; }
+  try{
+    await api("/api/schedule_enforce",{method:"POST",body:JSON.stringify({enabled:next})});
+    state.scheduleEnforce=next;
+    toast(next?"Schedule enforcement on — rogue changes are undone every update"
+              :"Schedule enforcement off");
+    if(t){ t.removeAttribute("aria-busy"); t.style.pointerEvents=""; }
+  }catch(e){
+    if(t){ t.classList.toggle("on",!next); t.setAttribute("aria-checked",!next);
+      t.removeAttribute("aria-busy"); t.style.pointerEvents=""; }
+    toast("Couldn't change: "+e.message,true);
   }
 }
 async function disableOnboard(id,btn){

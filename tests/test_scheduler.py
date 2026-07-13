@@ -114,6 +114,29 @@ class GroupTargets(unittest.TestCase):
                          "the whole group must be handed to the apply function")
 
 
+class ActiveAssertions(unittest.TestCase):
+    """active_assertions() reports what each enabled program says right now, for
+    the poller's schedule-enforcement pass."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.s = sched(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_reports_enabled_active_programs(self):
+        self.s.add_rule({"id": "p1", "targets": ["Z1"], "days": [],
+                         "periods": [{"time": "00:00", "action": {"mode": "Heat", "heatSetpoint": 68}}]})
+        self.s.add_rule({"id": "p2", "enabled": False, "targets": "all",
+                         "periods": [{"time": "00:00", "action": {"mode": "Off"}}]})
+        out = self.s.active_assertions()
+        self.assertEqual(len(out), 1, "disabled programs are excluded")
+        targets, action = out[0]
+        self.assertEqual(targets, ["Z1"])
+        self.assertEqual(action.get("heatSetpoint"), 68)
+
+
 class Validation(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

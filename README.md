@@ -331,6 +331,24 @@ onboard schedule just as effectively, so there's nothing to "disable" or restore
 > the wall *between* polls — but with Sole Controller mode on, the next poll takes
 > the zone back (and a program, if one covers it, re-imposes its own setpoints).
 
+**Enforce schedules (anti-tamper).** A switch at the top of the dashboard's **main
+(Zones) page** — mirrored by `SCHEDULE_ENFORCE` — makes the app, on **every update**,
+put any zone a program covers back to what its schedule says right now, undoing a
+temperature or mode change made at the thermostat or in the Resideo app. It's
+**drift-aware**: a zone already on its program costs no API calls, so this is cheap
+in steady state and only writes when something actually changed. Each correction
+raises an alert naming the zones, giving you a tamper log. Zones under an active
+generator rotation are left alone (same guard as programs), so it can't re-energize
+shed zones mid-outage.
+
+*Enforce schedules vs. Sole Controller:* Sole Controller keeps a zone under a
+permanent hold so the onboard schedule can't act, but leaves whatever setpoint is
+currently there; Enforce schedules forces the **program's** setpoints back. They're
+complementary — turn on both to fully lock zones to your programs. Note that with
+enforcement on, a manual one-off change to a program-covered zone (from the
+dashboard, the wall, or Resideo) is reverted on the next update; disable enforcement
+or the program if you want a manual override to stick.
+
 ---
 
 ## Automations — the rule model
@@ -524,7 +542,8 @@ Synchronous, thread-based, and deliberately boring for reliability:
 `snapshots.json` (saved zone states for restore), `trigger_state.json` (last-seen
 trigger values, for restart-safe edge detection), `rotations.json` (active
 duty-cycle rotations, so they resume after a restart), `groups.json` (named zone
-groups).
+groups), `schedule_enforce.json` (the schedule-enforcement toggle),
+`sole_control.json` (the Sole Controller toggle).
 
 These are written to the current working directory. A manual run keeps them next
 to the code; the systemd service (below) puts them in `/var/lib/hwcontrol` so the
