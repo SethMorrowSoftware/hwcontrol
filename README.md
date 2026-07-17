@@ -447,6 +447,19 @@ transiently exceeds the cap, and incoming units start one at a time to stagger
 compressor inrush. Keep the interval at/above the 5-minute minimum so the extra
 writes stay well within the rate limit.
 
+**Heating zones are never cycled.** A zone that is heating runs on **natural gas**,
+so it draws no generator power — duty-cycling it off would save the generator
+nothing and just let the space get cold. When a rotation starts, the app splits its
+targets **once**: any zone that is heating *at that moment* (set to `Heat`, or in
+`Auto` with the furnace actually firing) is left running and dropped from the
+rotation; only the electrically-taxing **cooling** zones are cycled, and the
+`run_count` / `max_power` cap applies to that cooling set. The split is fixed for
+the outage (it isn't re-evaluated each tick), survives a restart, and the exempt
+zones are listed on the Automations status stripe (`🔥 … left running (gas)`) and in
+`/api/automations` (`status.rotations[].exempt_heating`). A zone whose state can't
+be read is treated as cyclable — the safe default for the generator. If *every*
+target is heating, nothing is cycled and no relief is needed.
+
 ```jsonc
 // Half on / half off, break-before-make, every 15 min:
 { "type": "rotate", "rotation_id": "critical", "targets": ["Z1","Z2","Z3","Z4"],

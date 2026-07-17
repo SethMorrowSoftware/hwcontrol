@@ -93,6 +93,12 @@ Injected dependencies (kept generic so this module doesn't import the API client
                                     rotated zones - without this, a restored zone
                                     would sit at its pre-outage setpoints until
                                     the NEXT boundary, potentially hours away).
+  is_heating_fn(device_id)       -> optional; True if the zone is heating right
+                                    now. Heat runs on natural gas and draws no
+                                    generator power, so a rotation classifies its
+                                    targets ONCE at outage start and cycles only
+                                    the electrically-taxing (cooling) zones -
+                                    heating zones are left running and never shed.
 """
 
 from __future__ import annotations
@@ -167,6 +173,7 @@ class AutomationEngine:
         on_topics_changed: Optional[Callable[[], None]] = None,
         hourly_write_budget: Optional[int] = None,
         on_restored: Optional[Callable[[list], None]] = None,
+        is_heating_fn: Optional[Callable[[str], bool]] = None,
     ):
         self.apply_fn = apply_fn
         self.resolve_fn = resolve_fn
@@ -174,6 +181,12 @@ class AutomationEngine:
         self.notify_fn = notify_fn
         self.on_topics_changed = on_topics_changed
         self.on_restored = on_restored
+        # Predicate: is this zone HEATING right now? A heating zone runs on natural
+        # gas, so it draws no generator power and must never be duty-cycled for load
+        # relief. When set, a rotation excludes the zones that are heating at outage
+        # start and cycles only the electrically-taxing (cooling) ones. Kept as an
+        # injected predicate so this module stays free of device-field knowledge.
+        self.is_heating_fn = is_heating_fn
         # The API-call budget shared with polling (Config.RL_HOURLY_CAP). Used
         # only to WARN when a rotation's implied write rate gets close to it -
         # limiter sleeps inside actions delay everything else the engine does.
@@ -714,9 +727,34 @@ class AutomationEngine:
 
     # -------------------------------------------------------------- rotation
 
+    def _split_heating(self, device_ids: list) -> tuple[list, list]:
+        """Split resolved rotation targets into (exempt_heating, cyclable).
+
+        A unit that is heating runs on natural gas and draws no generator power, so
+        duty-cycling it off buys the generator nothing and just makes the space
+        cold - it must be left running. Only the electrically-taxing (cooling) units
+        are cycled. Evaluated ONCE, here at rotation (outage) start, and then held
+        for the whole outage. A unit whose heating state can't be read is treated as
+        cyclable, the safe default for the generator (better to cycle a zone we're
+        unsure about than assume it's gas heat and leave it drawing)."""
+        if not self.is_heating_fn:
+            return [], list(device_ids)
+        exempt, cyclable = [], []
+        for did in device_ids:
+            try:
+                heating = bool(self.is_heating_fn(did))
+            except Exception as exc:
+                log.error("is_heating check failed for %s (treating as cyclable): %s", did, exc)
+                heating = False
+            (exempt if heating else cyclable).append(did)
+        return exempt, cyclable
+
     def _start_rotation(self, action: dict) -> str:
         rid = action.get("rotation_id") or ("rot-" + str(uuid.uuid4())[:6])
-        targets = _dedupe(self._resolve(action["targets"]))
+        resolved = _dedupe(self._resolve(action["targets"]))
+        # Heating zones (gas) tax the generator zero, so they're left running and
+        # never cycled; only the cooling zones rotate. Classified once, now.
+        exempt_heating, targets = self._split_heating(resolved)
         n = len(targets)
         interval = max(MIN_ROTATION_MINUTES, int(action.get("interval_minutes", MIN_ROTATION_MINUTES)))
         on_values = action.get("on_values", {"mode": "Heat"})
@@ -747,18 +785,29 @@ class AutomationEngine:
                 "on_values": on_values, "off_values": off_values,
                 "on_fraction": float(on_fraction) if on_fraction is not None else None,
                 "max_power": max_power, "power": {k: float(v) for k, v in power.items()},
+                # Zones left running because they're heating (gas) - recorded for
+                # visibility; the rotation never touches them.
+                "exempt_heating": list(exempt_heating),
                 "index": 0, "current_on": set(), "job_id": f"rotation:{rid}",
             }
         # First tick now (drives the full desired state), then every interval.
         # _run_actions already holds _action_lock, so go straight to the body -
         # _rotation_tick would deadlock re-acquiring the (non-reentrant) lock.
         self._advance_and_drive(rid)
-        self._sched.add_job(
-            self._rotation_tick, IntervalTrigger(minutes=interval),
-            args=[rid], id=f"rotation:{rid}", replace_existing=True,
-        )
+        # No cooling zones to cycle (all targets are heating on gas): nothing draws
+        # the generator, so skip the interval job entirely rather than tick a no-op.
+        if n:
+            self._sched.add_job(
+                self._rotation_tick, IntervalTrigger(minutes=interval),
+                args=[rid], id=f"rotation:{rid}", replace_existing=True,
+            )
+        exempt_note = (f"; {len(exempt_heating)} heating zone(s) left running (gas): "
+                       f"{','.join(exempt_heating)}") if exempt_heating else ""
+        if not n:
+            return (f"rotate '{rid}': all {len(exempt_heating)} target zone(s) are heating "
+                    f"(gas, no generator load) - nothing to cycle{exempt_note}")
         cap = f"{run_count}/{n}" + (f", <= {max_power} power" if max_power is not None else "")
-        return f"rotate '{rid}': {cap} on, every {interval}m"
+        return f"rotate '{rid}': {cap} on, every {interval}m{exempt_note}"
 
     def _window_at(self, state: dict, index: int) -> list:
         """The set of units that should be ON starting at `index`: a contiguous
@@ -891,6 +940,12 @@ class AutomationEngine:
         with self._lock:
             items = list(self._rotations.items())
         for rid, st in items:
+            # An all-heating rotation (no cyclable targets) keeps its record for
+            # status/stop but has no work to do - don't arm or drive it.
+            if not st.get("targets"):
+                log.info("Resumed rotation '%s': no cooling zones to cycle "
+                         "(%d heating zone(s) left running).", rid, len(st.get("exempt_heating", [])))
+                continue
             interval = int(st.get("interval", MIN_ROTATION_MINUTES) or MIN_ROTATION_MINUTES)
             self._sched.add_job(
                 self._rotation_tick, IntervalTrigger(minutes=interval),
@@ -928,6 +983,8 @@ class AutomationEngine:
                  "run_count": st["run_count"], "total": len(st["targets"]),
                  "interval_minutes": st["interval"],
                  "max_power": st.get("max_power"), "on_fraction": st.get("on_fraction"),
+                 # Zones left running because they're on gas heat (never cycled).
+                 "exempt_heating": sorted(st.get("exempt_heating", [])),
                  "on_power": round(sum(float((st.get("power") or {}).get(d, 1))
                                        for d in st["current_on"]), 3) if st.get("max_power") is not None else None}
                 for rid, st in self._rotations.items()
@@ -982,6 +1039,7 @@ class AutomationEngine:
                 st.setdefault("on_fraction", None)
                 st.setdefault("max_power", None)
                 st.setdefault("power", {})
+                st.setdefault("exempt_heating", [])
                 self._rotations[rid] = st
             if self._rotations:
                 log.info("Loaded %d active rotation(s) to resume.", len(self._rotations))

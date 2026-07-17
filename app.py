@@ -123,6 +123,22 @@ def snapshot_read(device_id: str) -> Optional[dict]:
     return cached.get("changeableValues") if cached else None
 
 
+def _zone_is_heating(device_id: str) -> bool:
+    """True if a zone is heating right now — set to Heat, or (in Auto) with its
+    furnace actually firing. Heat runs on natural gas, so it draws no generator
+    power; the load-shed rotation uses this to leave heating zones running and
+    duty-cycle only the electrically-taxing (cooling) zones. Reads the cache only
+    (no API call): a zone we can't read reads as NOT heating, so the rotation
+    treats it as cyclable — the safe default for the generator."""
+    z = store.get(device_id) or {}
+    if (z.get("mode") or "") == "Heat":
+        return True
+    # operationStatus (flattened to equipmentStatus) is the LIVE equipment state:
+    # an Auto zone whose furnace is firing reports "...Heat..." here even though its
+    # mode isn't literally "Heat". Same "heat" substring test the store uses.
+    return "heat" in (z.get("equipmentStatus") or "").lower()
+
+
 def sync_automation_topics() -> None:
     """Keep the MQTT bridge subscribed to exactly the topics our rules watch."""
     if bridge and engine:
@@ -804,6 +820,7 @@ async def lifespan(app: FastAPI):
         on_topics_changed=sync_automation_topics,
         hourly_write_budget=Config.RL_HOURLY_CAP,
         on_restored=on_zones_restored,   # resume daily programs after a restore
+        is_heating_fn=_zone_is_heating,  # leave gas-heat zones out of load-shed cycling
     )
 
     if Config.MQTT_ENABLED:
