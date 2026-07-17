@@ -124,19 +124,22 @@ def snapshot_read(device_id: str) -> Optional[dict]:
 
 
 def _zone_is_heating(device_id: str) -> bool:
-    """True if a zone is heating right now — set to Heat, or (in Auto) with its
-    furnace actually firing. Heat runs on natural gas, so it draws no generator
-    power; the load-shed rotation uses this to leave heating zones running and
-    duty-cycle only the electrically-taxing (cooling) zones. Reads the cache only
-    (no API call): a zone we can't read reads as NOT heating, so the rotation
-    treats it as cyclable — the safe default for the generator."""
-    z = store.get(device_id) or {}
-    if (z.get("mode") or "") == "Heat":
-        return True
-    # operationStatus (flattened to equipmentStatus) is the LIVE equipment state:
-    # an Auto zone whose furnace is firing reports "...Heat..." here even though its
-    # mode isn't literally "Heat". Same "heat" substring test the store uses.
-    return "heat" in (z.get("equipmentStatus") or "").lower()
+    """True only if a zone is LOCKED to heating — its mode is Heat. Heat runs on
+    natural gas, so it draws no generator power, and the load-shed rotation leaves
+    a Heat zone running instead of cycling it.
+
+    Deliberately NOT based on live equipment state. The rotation classifies zones
+    ONCE, at outage start, so whatever we exempt now stays exempt for the outage —
+    dropped from the rotation, never counted against the cap, never shed. That's
+    only safe for a mode that CANNOT draw cooling load: an "Auto" zone can report
+    its furnace firing at this instant yet autonomously start its AC compressor
+    later when the space warms, and an exempted Auto zone's compressor would then
+    run UNCOUNTED and overload the generator. Only Heat mode can never run the
+    compressor, so only Heat mode is exempt; Auto / Cool / Off zones stay cyclable
+    — the safe default for the generator. (Set a zone to Heat, not Auto, if you
+    want it left running.) Reads the cache only (no API call); an unreadable zone
+    reads as not-heating and is therefore cyclable."""
+    return ((store.get(device_id) or {}).get("mode") or "") == "Heat"
 
 
 def sync_automation_topics() -> None:

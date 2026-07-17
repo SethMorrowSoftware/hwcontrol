@@ -115,6 +115,17 @@ class HeatingExemption(unittest.TestCase):
         self.assertEqual(self.calls, [], "no zone is driven when every target is on gas heat")
         self.assertEqual(eng.active_rotation_targets(), set())
 
+    def test_all_heating_record_persists_for_restart(self):
+        # An all-heating rotation has no drive (nothing to cycle), so it must be
+        # saved explicitly at start - otherwise its record + exempt list would be
+        # memory-only and lost on a mid-outage restart.
+        self._run_rotate(lambda d: True, run_count=2)
+        eng2 = make_engine(self.tmp.name, lambda t, v: [], is_heating_fn=lambda d: False)
+        self.assertIn("g", eng2._rotations, "the all-heating record must reach rotations.json")
+        self.assertEqual(eng2._rotations["g"]["targets"], [])
+        self.assertEqual(sorted(eng2._rotations["g"]["exempt_heating"]),
+                         ["Z1", "Z2", "Z3", "Z4"])
+
     def test_status_surfaces_exempt_zones(self):
         eng = self._run_rotate(lambda d: d == "Z4")
         rot = eng.status()["rotations"][0]

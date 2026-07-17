@@ -93,12 +93,15 @@ Injected dependencies (kept generic so this module doesn't import the API client
                                     rotated zones - without this, a restored zone
                                     would sit at its pre-outage setpoints until
                                     the NEXT boundary, potentially hours away).
-  is_heating_fn(device_id)       -> optional; True if the zone is heating right
-                                    now. Heat runs on natural gas and draws no
-                                    generator power, so a rotation classifies its
-                                    targets ONCE at outage start and cycles only
-                                    the electrically-taxing (cooling) zones -
-                                    heating zones are left running and never shed.
+  is_heating_fn(device_id)       -> optional; True if the zone is LOCKED to
+                                    heating (mode Heat). Heat runs on natural gas
+                                    and draws no generator power, so a rotation
+                                    classifies its targets ONCE at outage start and
+                                    cycles only the electrically-taxing (cooling)
+                                    zones - Heat zones are left running and never
+                                    shed. Only a mode that can never draw cooling
+                                    load is exempt (an Auto zone could start its
+                                    compressor later and overload the generator).
 """
 
 from __future__ import annotations
@@ -181,11 +184,12 @@ class AutomationEngine:
         self.notify_fn = notify_fn
         self.on_topics_changed = on_topics_changed
         self.on_restored = on_restored
-        # Predicate: is this zone HEATING right now? A heating zone runs on natural
-        # gas, so it draws no generator power and must never be duty-cycled for load
-        # relief. When set, a rotation excludes the zones that are heating at outage
-        # start and cycles only the electrically-taxing (cooling) ones. Kept as an
-        # injected predicate so this module stays free of device-field knowledge.
+        # Predicate: is this zone LOCKED to heating (mode Heat)? Heat runs on
+        # natural gas, so it draws no generator power and must never be duty-cycled
+        # for load relief. When set, a rotation excludes the Heat zones at outage
+        # start and cycles only the electrically-taxing (cooling) ones. Only a
+        # mode that cannot draw cooling load is safe to exempt for the whole outage.
+        # Kept as an injected predicate so this module stays free of device fields.
         self.is_heating_fn = is_heating_fn
         # The API-call budget shared with polling (Config.RL_HOURLY_CAP). Used
         # only to WARN when a rotation's implied write rate gets close to it -
@@ -794,6 +798,12 @@ class AutomationEngine:
         # _run_actions already holds _action_lock, so go straight to the body -
         # _rotation_tick would deadlock re-acquiring the (non-reentrant) lock.
         self._advance_and_drive(rid)
+        # Persist the record so it survives a restart. The mixed case is already
+        # saved by _drive_rotation, but the all-heating (n==0) path returns from
+        # _advance_and_drive before driving, so save unconditionally here (cheap,
+        # idempotent) - otherwise an all-heating rotation's exempt list and record
+        # would be memory-only and lost on a mid-outage restart.
+        self._save_rotations()
         # No cooling zones to cycle (all targets are heating on gas): nothing draws
         # the generator, so skip the interval job entirely rather than tick a no-op.
         if n:
