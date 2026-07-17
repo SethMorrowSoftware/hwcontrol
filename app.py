@@ -123,6 +123,25 @@ def snapshot_read(device_id: str) -> Optional[dict]:
     return cached.get("changeableValues") if cached else None
 
 
+def _zone_is_heating(device_id: str) -> bool:
+    """True only if a zone is LOCKED to heating — its mode is Heat. Heat runs on
+    natural gas, so it draws no generator power, and the load-shed rotation leaves
+    a Heat zone running instead of cycling it.
+
+    Deliberately NOT based on live equipment state. The rotation classifies zones
+    ONCE, at outage start, so whatever we exempt now stays exempt for the outage —
+    dropped from the rotation, never counted against the cap, never shed. That's
+    only safe for a mode that CANNOT draw cooling load: an "Auto" zone can report
+    its furnace firing at this instant yet autonomously start its AC compressor
+    later when the space warms, and an exempted Auto zone's compressor would then
+    run UNCOUNTED and overload the generator. Only Heat mode can never run the
+    compressor, so only Heat mode is exempt; Auto / Cool / Off zones stay cyclable
+    — the safe default for the generator. (Set a zone to Heat, not Auto, if you
+    want it left running.) Reads the cache only (no API call); an unreadable zone
+    reads as not-heating and is therefore cyclable."""
+    return ((store.get(device_id) or {}).get("mode") or "") == "Heat"
+
+
 def sync_automation_topics() -> None:
     """Keep the MQTT bridge subscribed to exactly the topics our rules watch."""
     if bridge and engine:
@@ -804,6 +823,7 @@ async def lifespan(app: FastAPI):
         on_topics_changed=sync_automation_topics,
         hourly_write_budget=Config.RL_HOURLY_CAP,
         on_restored=on_zones_restored,   # resume daily programs after a restore
+        is_heating_fn=_zone_is_heating,  # leave gas-heat zones out of load-shed cycling
     )
 
     if Config.MQTT_ENABLED:

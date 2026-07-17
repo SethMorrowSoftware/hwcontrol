@@ -2222,6 +2222,10 @@ function renderAutoStripe(){
     }).length;
     const actvBit=state.devices.length?`, <b>${actv}</b> actively running now`:"";
     bits.push(`<div class="stat live" title="Zones in the current 'on' window; 'actively running' is the live equipment state from the thermostats">↻ Rotating <b>${esc(rot.rotation_id)}</b>: ${rot.running.length}/${rot.total} zones on (${names}), swapping every ${esc(rot.interval_minutes)} min${actvBit}</div>`);
+    // Heating zones (gas) draw no generator power, so they're left running and
+    // excluded from the cycling — surface them so the exemption is visible.
+    const ex=rot.exempt_heating||[];
+    if(ex.length) bits.push(`<div class="stat" title="These zones are heating on natural gas, which doesn't tax the generator, so they're left running instead of being cycled off.">🔥 ${ex.length} heating zone(s) left running (gas): ${ex.map(deviceName).map(esc).join(", ")}</div>`);
   });
   Object.entries(state.autoStatus.snapshots||{}).forEach(([n,ids])=>
     bits.push(`<div class="stat">saved “<b>${esc(n)}</b>” · ${ids.length} zone(s)</div>`));

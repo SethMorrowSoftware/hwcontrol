@@ -602,6 +602,46 @@ class ScheduleSnapshotReadout(unittest.TestCase):
         self.assertEqual(drifted, would_correct)
 
 
+class ZoneIsHeatingPredicate(unittest.TestCase):
+    """Only a Heat-MODE zone is exempt from generator load-shed cycling. An Auto
+    zone whose furnace is momentarily firing must NOT be exempted: the rotation's
+    split is made once at outage start, and an exempted Auto zone could
+    autonomously start its AC compressor later and overload the generator with an
+    uncounted cooling load."""
+
+    def setUp(self):
+        self._store = app_mod.store
+        store = StateStore()
+        store.ingest([
+            {"deviceID": "H", "name": "Heat", "isAlive": True,
+             "changeableValues": {"mode": "Heat", "heatSetpoint": 68},
+             "operationStatus": {"mode": "Heat"}},
+            {"deviceID": "AH", "name": "AutoHeating", "isAlive": True,
+             "changeableValues": {"mode": "Auto", "heatSetpoint": 68, "coolSetpoint": 76},
+             "operationStatus": {"mode": "Heat"}},        # furnace firing RIGHT NOW
+            {"deviceID": "C", "name": "Cool", "isAlive": True,
+             "changeableValues": {"mode": "Cool", "coolSetpoint": 72},
+             "operationStatus": {"mode": "Cool"}},
+            {"deviceID": "O", "name": "Off", "isAlive": True,
+             "changeableValues": {"mode": "Off"}, "operationStatus": {"mode": "EquipmentOff"}},
+        ], 1)
+        app_mod.store = store
+
+    def tearDown(self):
+        app_mod.store = self._store
+
+    def test_only_heat_mode_is_exempt(self):
+        self.assertTrue(app_mod._zone_is_heating("H"), "Heat mode is gas heat -> exempt")
+        self.assertFalse(app_mod._zone_is_heating("AH"),
+                         "an Auto zone firing heat NOW can start cooling later -> must stay cyclable")
+        self.assertFalse(app_mod._zone_is_heating("C"), "Cool taxes the generator")
+        self.assertFalse(app_mod._zone_is_heating("O"), "Off draws nothing but isn't 'heating'")
+
+    def test_unpolled_zone_is_not_heating(self):
+        self.assertFalse(app_mod._zone_is_heating("never-seen"),
+                         "an unreadable zone is cyclable, the safe default for the generator")
+
+
 class GroupEndpoints(unittest.TestCase):
     """The /api/groups CRUD wrappers surface store errors as HTTP 400/404."""
 

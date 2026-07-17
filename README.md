@@ -447,6 +447,26 @@ transiently exceeds the cap, and incoming units start one at a time to stagger
 compressor inrush. Keep the interval at/above the 5-minute minimum so the extra
 writes stay well within the rate limit.
 
+**Heating zones are never cycled.** A zone set to **`Heat`** runs on **natural gas**,
+so it draws no generator power — duty-cycling it off would save the generator
+nothing and just let the space get cold. When a rotation starts, the app splits its
+targets **once**: any zone in **`Heat`** mode at that moment is left running and
+dropped from the rotation; only the electrically-taxing **cooling** zones are
+cycled, and the `run_count` / `max_power` cap applies to that cooling set. The split
+is fixed for the outage (it isn't re-evaluated each tick), survives a restart, and
+the exempt zones are listed on the Automations status stripe (`🔥 … left running
+(gas)`) and in `/api/automations` (`status.rotations[].exempt_heating`). If *every*
+target is in Heat, nothing is cycled and no relief is needed.
+
+> **Only `Heat` mode is exempt — not `Auto`.** The split is made once, at outage
+> start, and holds for the whole outage, so a zone is only safe to exempt if it can
+> *never* draw cooling load. `Heat` mode can't run the AC compressor; `Auto` can —
+> an Auto zone whose furnace is firing at outage start could autonomously switch to
+> cooling later, and an exempted zone's compressor would then run **uncounted** and
+> overload the generator. So `Auto` (and `Cool`, and `Off`) zones stay cyclable, and
+> a zone that can't be read is treated as cyclable — the safe default. If you want a
+> zone left running during an outage, set it to **`Heat`**, not `Auto`.
+
 ```jsonc
 // Half on / half off, break-before-make, every 15 min:
 { "type": "rotate", "rotation_id": "critical", "targets": ["Z1","Z2","Z3","Z4"],

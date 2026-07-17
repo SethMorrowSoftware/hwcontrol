@@ -18,7 +18,7 @@ from automation import AutomationEngine
 
 
 def make_engine(tmpdir, apply_fn, notify_fn=None, resolve=("Z1", "Z2", "Z3", "Z4"),
-                on_restored=None):
+                on_restored=None, is_heating_fn=None):
     return AutomationEngine(
         apply_fn=apply_fn,
         resolve_fn=lambda: list(resolve),
@@ -30,6 +30,7 @@ def make_engine(tmpdir, apply_fn, notify_fn=None, resolve=("Z1", "Z2", "Z3", "Z4
         trigger_state_path=os.path.join(tmpdir, "trig.json"),
         rotations_path=os.path.join(tmpdir, "rots.json"),
         on_restored=on_restored,
+        is_heating_fn=is_heating_fn,
     )
 
 
@@ -58,6 +59,153 @@ class RotationWindowMath(unittest.TestCase):
         st = {"targets": ["A", "B"], "run_count": 2, "max_power": 3.0,
               "power": {"A": 5, "B": 5}}
         self.assertEqual(self.eng._window_at(st, 0), ["A"])  # never run nothing
+
+
+class HeatingExemption(unittest.TestCase):
+    """Gas heat draws no generator power, so a load-shed rotation must leave the
+    zones that are heating running and duty-cycle only the cooling zones. The split
+    is made ONCE, at outage start, and heating zones are never touched afterward."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _run_rotate(self, is_heating_fn, run_count=1, targets=("Z1", "Z2", "Z3", "Z4"),
+                    notify_fn=None):
+        self.calls = []
+        eng = make_engine(self.tmp.name,
+                          lambda t, v: self.calls.append((t, v.get("mode"))) or [],
+                          notify_fn=notify_fn, resolve=targets, is_heating_fn=is_heating_fn)
+        eng.add_rule({"id": "shed", "name": "shed", "enabled": True,
+                      "trigger": {"mode": "all", "retrigger": "on_change",
+                                  "conditions": [{"topic": "gen", "type": "equals", "value": "on"}]},
+                      "actions": [{"type": "rotate", "rotation_id": "g",
+                                   "targets": list(targets), "run_count": run_count,
+                                   "interval_minutes": 15,
+                                   "on_values": {"mode": "Cool", "coolSetpoint": 72},
+                                   "off_values": {"mode": "Off"}}]})
+        eng.run_rule_now("shed")   # holds _action_lock, like a real trigger
+        return eng
+
+    def test_heating_zones_are_never_cycled(self):
+        eng = self._run_rotate(lambda d: d in {"Z2", "Z4"}, run_count=1)
+        st = eng._rotations["g"]
+        self.assertEqual(st["targets"], ["Z1", "Z3"], "only cooling zones rotate")
+        self.assertEqual(sorted(st["exempt_heating"]), ["Z2", "Z4"])
+        touched = {t for t, _ in self.calls}
+        self.assertNotIn("Z2", touched, "a heating zone must never be driven off or on")
+        self.assertNotIn("Z4", touched)
+        self.assertEqual(eng.active_rotation_targets(), {"Z1", "Z3"},
+                         "exempt heating zones are not reported as 'under rotation'")
+
+    def test_run_count_caps_over_cooling_set_only(self):
+        # 4 targets, 2 heating -> 2 cooling; run_count 1 -> exactly one cooling on,
+        # the other cooling zone off. Heating zones untouched.
+        eng = self._run_rotate(lambda d: d in {"Z2", "Z4"}, run_count=1)
+        self.assertEqual(eng._rotations["g"]["current_on"], {"Z1"})
+        self.assertEqual(sorted(self.calls), [("Z1", "Cool"), ("Z3", "Off")])
+
+    def test_all_heating_cycles_nothing(self):
+        eng = self._run_rotate(lambda d: True, run_count=2)
+        st = eng._rotations["g"]
+        self.assertEqual(st["targets"], [], "nothing left to cycle")
+        self.assertEqual(sorted(st["exempt_heating"]), ["Z1", "Z2", "Z3", "Z4"])
+        self.assertEqual(self.calls, [], "no zone is driven when every target is on gas heat")
+        self.assertEqual(eng.active_rotation_targets(), set())
+
+    def test_all_heating_record_persists_for_restart(self):
+        # An all-heating rotation has no drive (nothing to cycle), so it must be
+        # saved explicitly at start - otherwise its record + exempt list would be
+        # memory-only and lost on a mid-outage restart.
+        self._run_rotate(lambda d: True, run_count=2)
+        eng2 = make_engine(self.tmp.name, lambda t, v: [], is_heating_fn=lambda d: False)
+        self.assertIn("g", eng2._rotations, "the all-heating record must reach rotations.json")
+        self.assertEqual(eng2._rotations["g"]["targets"], [])
+        self.assertEqual(sorted(eng2._rotations["g"]["exempt_heating"]),
+                         ["Z1", "Z2", "Z3", "Z4"])
+
+    def test_status_surfaces_exempt_zones(self):
+        eng = self._run_rotate(lambda d: d == "Z4")
+        rot = eng.status()["rotations"][0]
+        self.assertEqual(rot["exempt_heating"], ["Z4"])
+        self.assertEqual(rot["total"], 3, "total counts only the zones being cycled")
+
+    def test_no_predicate_is_backward_compatible(self):
+        eng = self._run_rotate(None, run_count=1)
+        self.assertEqual(eng._rotations["g"]["targets"], ["Z1", "Z2", "Z3", "Z4"])
+        self.assertEqual(eng._rotations["g"]["exempt_heating"], [])
+
+    def test_unreadable_zone_is_treated_as_cyclable(self):
+        def probe(d):
+            if d == "Z2":
+                raise RuntimeError("not polled yet")
+            return False
+        eng = self._run_rotate(probe, run_count=4)
+        self.assertIn("Z2", eng._rotations["g"]["targets"],
+                      "a zone whose state can't be read is cyclable (safe for the generator)")
+        self.assertEqual(eng._rotations["g"]["exempt_heating"], [])
+
+    def test_half_on_half_off_applies_to_cooling_set(self):
+        # The facility's actual config: on_fraction 0.5 (half on / half off), Auto
+        # on_values. With 2 of 4 targets heating at outage start, "half" is computed
+        # over the 2 COOLING zones -> 1 on / 1 off; the heating zones are untouched.
+        self.calls = []
+        eng = make_engine(self.tmp.name,
+                          lambda t, v: self.calls.append((t, v.get("mode"))) or [],
+                          is_heating_fn=lambda d: d in {"Z2", "Z4"})
+        eng.add_rule({"id": "generator", "name": "gen", "enabled": True,
+                      "trigger": {"mode": "all", "retrigger": "on_change",
+                                  "conditions": [{"topic": "gen", "type": "equals", "value": "on"}]},
+                      "actions": [{"type": "rotate", "rotation_id": "generator",
+                                   "targets": ["Z1", "Z2", "Z3", "Z4"],
+                                   "on_fraction": 0.5, "interval_minutes": 15,
+                                   "on_values": {"mode": "Auto", "heatSetpoint": 66,
+                                                 "coolSetpoint": 80, "autoChangeoverActive": True},
+                                   "off_values": {"mode": "Off"}}]})
+        eng.run_rule_now("generator")
+        st = eng._rotations["generator"]
+        self.assertEqual(st["targets"], ["Z1", "Z3"], "only the cooling zones rotate")
+        self.assertEqual(st["run_count"], 1, "half of 2 cooling zones = 1 on at a time")
+        self.assertEqual(st["current_on"], {"Z1"})
+        touched = {t for t, _ in self.calls}
+        self.assertNotIn("Z2", touched)
+        self.assertNotIn("Z4", touched)
+
+    def test_all_cooling_rotates_exactly_as_before(self):
+        # Cooling season: nothing is heating at outage start, so every zone rotates
+        # half-on/half-off just as it does today - the generator is protected the
+        # same, with no exemption in play.
+        self.calls = []
+        eng = make_engine(self.tmp.name,
+                          lambda t, v: self.calls.append((t, v.get("mode"))) or [],
+                          is_heating_fn=lambda d: False)
+        eng.add_rule({"id": "generator", "name": "gen", "enabled": True,
+                      "trigger": {"mode": "all", "retrigger": "on_change",
+                                  "conditions": [{"topic": "gen", "type": "equals", "value": "on"}]},
+                      "actions": [{"type": "rotate", "rotation_id": "generator",
+                                   "targets": ["Z1", "Z2", "Z3", "Z4"],
+                                   "on_fraction": 0.5, "interval_minutes": 15,
+                                   "on_values": {"mode": "Auto"}, "off_values": {"mode": "Off"}}]})
+        eng.run_rule_now("generator")
+        st = eng._rotations["generator"]
+        self.assertEqual(st["targets"], ["Z1", "Z2", "Z3", "Z4"])
+        self.assertEqual(st["exempt_heating"], [])
+        self.assertEqual(st["run_count"], 2, "half of 4 = 2 on at a time")
+        self.assertEqual(st["current_on"], {"Z1", "Z2"})
+
+    def test_split_persists_for_resume(self):
+        # The once-at-outage-start classification must survive a restart: the drive
+        # persists it, and a fresh engine loads the stored cooling set + exempt list
+        # rather than re-classifying (is_heating_fn here is the OPPOSITE, to prove
+        # the loaded split is used, not a re-read).
+        self._run_rotate(lambda d: d in {"Z2", "Z4"}, run_count=1)
+        eng2 = make_engine(self.tmp.name, lambda t, v: [],
+                           is_heating_fn=lambda d: d in {"Z1", "Z3"})
+        st = eng2._rotations["g"]
+        self.assertEqual(st["targets"], ["Z1", "Z3"], "stored cooling set is kept on load")
+        self.assertEqual(sorted(st["exempt_heating"]), ["Z2", "Z4"])
 
 
 class BreakBeforeMakeUnderFailure(unittest.TestCase):
