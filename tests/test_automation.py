@@ -136,6 +136,54 @@ class HeatingExemption(unittest.TestCase):
                       "a zone whose state can't be read is cyclable (safe for the generator)")
         self.assertEqual(eng._rotations["g"]["exempt_heating"], [])
 
+    def test_half_on_half_off_applies_to_cooling_set(self):
+        # The facility's actual config: on_fraction 0.5 (half on / half off), Auto
+        # on_values. With 2 of 4 targets heating at outage start, "half" is computed
+        # over the 2 COOLING zones -> 1 on / 1 off; the heating zones are untouched.
+        self.calls = []
+        eng = make_engine(self.tmp.name,
+                          lambda t, v: self.calls.append((t, v.get("mode"))) or [],
+                          is_heating_fn=lambda d: d in {"Z2", "Z4"})
+        eng.add_rule({"id": "generator", "name": "gen", "enabled": True,
+                      "trigger": {"mode": "all", "retrigger": "on_change",
+                                  "conditions": [{"topic": "gen", "type": "equals", "value": "on"}]},
+                      "actions": [{"type": "rotate", "rotation_id": "generator",
+                                   "targets": ["Z1", "Z2", "Z3", "Z4"],
+                                   "on_fraction": 0.5, "interval_minutes": 15,
+                                   "on_values": {"mode": "Auto", "heatSetpoint": 66,
+                                                 "coolSetpoint": 80, "autoChangeoverActive": True},
+                                   "off_values": {"mode": "Off"}}]})
+        eng.run_rule_now("generator")
+        st = eng._rotations["generator"]
+        self.assertEqual(st["targets"], ["Z1", "Z3"], "only the cooling zones rotate")
+        self.assertEqual(st["run_count"], 1, "half of 2 cooling zones = 1 on at a time")
+        self.assertEqual(st["current_on"], {"Z1"})
+        touched = {t for t, _ in self.calls}
+        self.assertNotIn("Z2", touched)
+        self.assertNotIn("Z4", touched)
+
+    def test_all_cooling_rotates_exactly_as_before(self):
+        # Cooling season: nothing is heating at outage start, so every zone rotates
+        # half-on/half-off just as it does today - the generator is protected the
+        # same, with no exemption in play.
+        self.calls = []
+        eng = make_engine(self.tmp.name,
+                          lambda t, v: self.calls.append((t, v.get("mode"))) or [],
+                          is_heating_fn=lambda d: False)
+        eng.add_rule({"id": "generator", "name": "gen", "enabled": True,
+                      "trigger": {"mode": "all", "retrigger": "on_change",
+                                  "conditions": [{"topic": "gen", "type": "equals", "value": "on"}]},
+                      "actions": [{"type": "rotate", "rotation_id": "generator",
+                                   "targets": ["Z1", "Z2", "Z3", "Z4"],
+                                   "on_fraction": 0.5, "interval_minutes": 15,
+                                   "on_values": {"mode": "Auto"}, "off_values": {"mode": "Off"}}]})
+        eng.run_rule_now("generator")
+        st = eng._rotations["generator"]
+        self.assertEqual(st["targets"], ["Z1", "Z2", "Z3", "Z4"])
+        self.assertEqual(st["exempt_heating"], [])
+        self.assertEqual(st["run_count"], 2, "half of 4 = 2 on at a time")
+        self.assertEqual(st["current_on"], {"Z1", "Z2"})
+
     def test_split_persists_for_resume(self):
         # The once-at-outage-start classification must survive a restart: the drive
         # persists it, and a fresh engine loads the stored cooling set + exempt list
