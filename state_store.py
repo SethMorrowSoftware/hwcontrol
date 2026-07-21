@@ -14,7 +14,7 @@ import logging
 import threading
 import time
 from collections import deque
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 log = logging.getLogger("honeywell.store")
 
@@ -131,11 +131,16 @@ _WATCHED = ("online", "mode", "heatSetpoint", "coolSetpoint", "setpointStatus",
 
 
 class StateStore:
-    def __init__(self, maxlen_alerts: int = 200):
+    def __init__(self, maxlen_alerts: int = 200,
+                 on_alert: Optional[Callable[[dict], None]] = None):
         self._lock = threading.Lock()
         self._devices: dict[str, dict] = {}          # deviceID -> normalized state
         self._location_of: dict[str, Any] = {}       # deviceID -> locationId
         self._alerts: deque[dict] = deque(maxlen=maxlen_alerts)
+        # Optional sink called once for every newly-raised alert (see
+        # set_on_alert). Used to mirror offline/online transitions to Slack.
+        # Nothing in this module does network I/O - the sink does.
+        self._on_alert = on_alert
         self._temp_zone: dict[str, str] = {}         # deviceID -> "ok" | "high" | "low"
         self._equip_mismatch: dict[str, int] = {}    # deviceID -> consecutive mismatch polls
         self._last_poll_ts: Optional[float] = None
@@ -185,6 +190,8 @@ class StateStore:
             # Append alerts under the same lock so alert order matches state order.
             for alert in pending_alerts:
                 self._alerts.appendleft(alert)
+        # Fire the sink OUTSIDE the lock (slow/broken sink must not stall polling).
+        self._fire_alert_sink(pending_alerts)
         return events
 
     def reap(self, seen_ids: Iterable[str]) -> list[dict]:
@@ -195,6 +202,7 @@ class StateStore:
         dropped device."""
         seen = set(seen_ids)
         events: list[dict] = []
+        reaped_alerts: list[dict] = []
         with self._lock:
             gone = [did for did in self._devices if did not in seen]
             for did in gone:
@@ -204,12 +212,15 @@ class StateStore:
                 self._equip_mismatch.pop(did, None)
                 name = (dev or {}).get("name") or did
                 events.append({"type": "removed", "deviceID": did, "name": name, "ts": time.time()})
-                self._alerts.appendleft({
+                alert = {
                     "severity": "warning", "kind": "removed",
                     "message": f"{name} is no longer reported by the account (removed)",
                     "deviceID": did, "ts": time.time(),
-                })
+                }
+                self._alerts.appendleft(alert)
+                reaped_alerts.append(alert)
                 log.info("Reaped device %s (no longer in account).", did)
+        self._fire_alert_sink(reaped_alerts)
         return events
 
     def _diff(self, old: Optional[dict], new: dict) -> list[dict]:
@@ -325,11 +336,33 @@ class StateStore:
                                f"to {new.get('mode')} — check the unit",
                     "deviceID": device_id, "ts": time.time()})
 
+    def set_on_alert(self, cb: Optional[Callable[[dict], None]]) -> None:
+        """Register a sink called once for every newly-raised alert, AFTER the
+        alert is recorded and OUTSIDE the store lock. The sink must return
+        quickly and must not raise (exceptions are caught and logged): the
+        offline/online Slack notifier, for example, just enqueues and returns.
+        Kept as dependency injection so this module never touches the network."""
+        self._on_alert = cb
+
+    def _fire_alert_sink(self, alerts: list[dict]) -> None:
+        """Deliver freshly-created alerts to the registered sink, in order.
+        Called OUTSIDE self._lock so a slow/broken sink can neither stall a poll
+        nor deadlock against another store method."""
+        cb = self._on_alert
+        if not cb:
+            return
+        for alert in alerts:
+            try:
+                cb(alert)
+            except Exception as exc:
+                log.error("Alert sink raised for %s alert: %s", alert.get("kind"), exc)
+
     def add_alert(self, severity: str, kind: str, message: str, device_id: str = "") -> dict:
         alert = {"severity": severity, "kind": kind, "message": message,
                  "deviceID": device_id, "ts": time.time()}
         with self._lock:
             self._alerts.appendleft(alert)
+        self._fire_alert_sink([alert])
         return alert
 
     def mark_poll(self, error: Optional[str] = None) -> None:

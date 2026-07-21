@@ -168,7 +168,8 @@ on an air-gapped LAN) that polls the local API every ~10s. Four tabs:
   equipment faults (a zone actively heating/cooling while set to Off — checked
   against the live equipment state, debounced across two polls), and a log of
   every automation action taken, filterable by severity; the tab badge turns
-  red/amber while critical/warning alerts are live.
+  red/amber while critical/warning alerts are live. The offline/again events can
+  also be pushed to **Slack** — see [Slack notifications](#slack-notifications-unit-offline--online).
 
 ### Zone groups
 
@@ -192,6 +193,60 @@ Set `DASHBOARD_TOKEN` in `.env` to require `?token=...` in the URL (or an `X-Tok
 header) for the dashboard and API. This is a **light guard, not real
 authentication** — for production, put the app behind a VPN or a reverse proxy that
 handles auth/TLS.
+
+---
+
+## Slack notifications (unit offline / online)
+
+Get a Slack message the moment a thermostat drops off the network, and another
+when it comes back — **one message per transition**, never a repeat while the unit
+stays down. This rides on the same edge-triggered offline/again detection that
+already powers the Alerts feed, so a flapping unit doesn't spam the channel: you
+get exactly one "🔴 … went offline" when it goes down and one "🟢 … is back online"
+when it returns.
+
+### Setup
+
+1. **Create a Slack app** at <https://api.slack.com/apps> → *Create New App* →
+   *From scratch*, pick your workspace.
+2. **Add the bot scope.** Under *OAuth & Permissions* → *Scopes* → *Bot Token
+   Scopes*, add **`chat:write`**.
+3. **Install** the app to the workspace (*OAuth & Permissions* → *Install to
+   Workspace*) and copy the **Bot User OAuth Token** — it starts with `xoxb-`.
+4. **Invite the bot** to the channel you want the alerts in: in that channel,
+   `/invite @your-app-name`. (A bot can only post to channels it's a member of;
+   skipping this gives a `not_in_channel` error in the logs.)
+5. **Configure `.env`:**
+
+   ```bash
+   SLACK_ENABLED=true
+   SLACK_BOT_TOKEN=xoxb-your-bot-token
+   SLACK_CHANNEL=C0123456789        # the channel ID, or a #channel-name
+   ```
+
+   The channel **ID** (from the channel's *View channel details*) is the most
+   robust; a `#name` also works. Restart the app; the startup log prints
+   `Slack alerts enabled (channel …)`.
+
+### Behavior & reliability
+
+- **One notification per state change.** A unit that's offline across many polls
+  alerts once; the next alert for it is the "back online" when it recovers. A unit
+  that's already offline when the app starts alerts once too (so a zone that's dead
+  at boot isn't silently unmonitored); healthy units at boot stay quiet.
+- **Off the hot path.** Messages are delivered on a background worker thread, so a
+  slow or unreachable Slack never stalls polling or thermostat control — the design
+  mirrors the MQTT bridge.
+- **Best-effort, never fatal.** Transient failures (rate-limit `429` honoring
+  `Retry-After`, `5xx`, network blips) are retried with capped backoff; a
+  misconfiguration (bad token, wrong channel, bot not invited) is logged once,
+  clearly, and the message is dropped rather than retried forever. A Slack outage
+  can never take down the control loop.
+- **In-app alerts are unaffected.** Slack is an *additional* sink; the dashboard
+  Alerts feed and the MQTT `honeywell/alerts` topic still carry everything.
+
+> Requires no new dependency (it uses the `requests` library the app already
+> ships with) and no inbound network — the app calls out to `slack.com`.
 
 ---
 
@@ -580,6 +635,7 @@ Synchronous, thread-based, and deliberately boring for reliability:
 | `automation.py`      | The MQTT-triggered rules engine (matching, snapshot/restore, rotation). |
 | `groups.py`          | Named, reusable zone groups (picker convenience; expanded to deviceIDs before use). |
 | `mqtt_bridge.py`     | paho-mqtt bridge: publishes state, routes command & trigger topics.  |
+| `slack_notifier.py`  | Optional Slack notifications for unit offline/online (chat.postMessage, off-thread). |
 | `config.py`          | Loads config from environment / `.env`.                              |
 | `authorize.py`       | Standalone CLI to complete OAuth and list devices without the server. |
 | `static/index.html`  | The entire dashboard (HTML/CSS/JS, no build step).                   |

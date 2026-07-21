@@ -39,6 +39,7 @@ from config import Config
 from groups import GroupStore
 from honeywell_client import HoneywellClient, HoneywellError, NotAuthorized
 from scheduler import FacilityScheduler
+from slack_notifier import SlackNotifier
 from state_store import StateStore
 from storage import atomic_write_json, load_json
 
@@ -70,6 +71,7 @@ groups = GroupStore()
 bridge = None          # set up in lifespan if MQTT enabled
 scheduler: Optional[FacilityScheduler] = None
 engine: Optional[AutomationEngine] = None
+slack: Optional[SlackNotifier] = None   # set up in lifespan if Slack enabled
 _poller_stop = threading.Event()
 _schedules_asserted = False   # assert program setpoints once, after the first poll
 _deferral_notified = False    # one alert per deferral episode, not one per poll
@@ -115,6 +117,27 @@ def notify(severity: str, kind: str, message: str) -> None:
     alert = store.add_alert(severity, kind, message)
     if bridge and bridge.connected:
         bridge.publish_alert(alert)
+
+
+# Alert kinds mirrored to Slack. Deliberately just the unit up/down transitions
+# the operator asked for: state_store's alert generation is edge-triggered, so
+# each unit yields exactly one "offline" when it drops and one "online" when it
+# returns - no repeats while the state is unchanged. Widen this set to forward
+# more alert kinds (temp excursions, equipment faults) to Slack later.
+_SLACK_ALERT_KINDS = frozenset({"offline", "online"})
+
+
+def _on_new_alert(alert: dict) -> None:
+    """Sink invoked by the store for every newly-raised alert. Forwards unit
+    offline/online transitions to Slack (best-effort, non-blocking). Runs on the
+    poller thread inside the store's alert path, so it must never raise."""
+    notifier = slack
+    if notifier is None or alert.get("kind") not in _SLACK_ALERT_KINDS:
+        return
+    try:
+        notifier.send_alert(alert)
+    except Exception as exc:
+        log.error("Slack notify failed for %s alert: %s", alert.get("kind"), exc)
 
 
 def snapshot_read(device_id: str) -> Optional[dict]:
@@ -806,7 +829,7 @@ def _poller_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global bridge, scheduler, engine
+    global bridge, scheduler, engine, slack
 
     if Config.HOST not in ("127.0.0.1", "localhost", "::1") and not Config.DASHBOARD_TOKEN:
         log.warning("SECURITY: binding %s with no DASHBOARD_TOKEN set - the control API is "
@@ -853,6 +876,26 @@ async def lifespan(app: FastAPI):
     if scheduler.timezone_error:
         notify("critical", "config", scheduler.timezone_error)
 
+    # Slack offline/online notifications (optional). Wire the store's alert sink
+    # BEFORE the poller starts so the very first poll's transitions are caught.
+    if Config.SLACK_ENABLED:
+        if not (Config.SLACK_BOT_TOKEN and Config.SLACK_CHANNEL):
+            log.warning("SLACK_ENABLED but SLACK_BOT_TOKEN and/or SLACK_CHANNEL is unset - "
+                        "Slack alerts stay OFF until both are provided.")
+        else:
+            if not Config.SLACK_BOT_TOKEN.startswith("xoxb-"):
+                log.warning("SLACK_BOT_TOKEN doesn't look like a bot token (expected an "
+                            "'xoxb-...' value); Slack may reject the posts.")
+            try:
+                slack = SlackNotifier(Config.SLACK_BOT_TOKEN, Config.SLACK_CHANNEL)
+                slack.start()
+                store.set_on_alert(_on_new_alert)
+                log.info("Slack alerts enabled (channel %s): notifying on unit offline/online.",
+                         Config.SLACK_CHANNEL)
+            except Exception as exc:
+                log.error("Slack notifier failed to start (continuing without it): %s", exc)
+                slack = None
+
     poller = threading.Thread(target=_poller_loop, name="poller", daemon=True)
     poller.start()
 
@@ -869,6 +912,8 @@ async def lifespan(app: FastAPI):
             scheduler.stop()
         if bridge:
             bridge.stop()
+        if slack:
+            slack.stop()
 
 
 app = FastAPI(title="Facility Thermostat Dashboard", lifespan=lifespan)

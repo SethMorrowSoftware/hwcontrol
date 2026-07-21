@@ -697,5 +697,42 @@ class StoreLocationHelpers(unittest.TestCase):
                          "an unreported isAlive must not read as 'came back online'")
 
 
+class SlackAlertDispatch(unittest.TestCase):
+    """_on_new_alert is the store's alert sink: it forwards ONLY unit
+    offline/online transitions to Slack, is a no-op when Slack isn't configured,
+    and never lets a notifier failure escape into the poller's alert path."""
+
+    def setUp(self):
+        self._orig = app_mod.slack
+
+    def tearDown(self):
+        app_mod.slack = self._orig
+
+    def test_forwards_offline_and_online_only(self):
+        sent = []
+
+        class FakeSlack:
+            def send_alert(self, alert):
+                sent.append(alert["kind"])
+        app_mod.slack = FakeSlack()
+        app_mod._on_new_alert({"kind": "offline", "message": "x went offline"})
+        app_mod._on_new_alert({"kind": "online", "message": "x is back online"})
+        app_mod._on_new_alert({"kind": "temp_high", "message": "hot"})    # not forwarded
+        app_mod._on_new_alert({"kind": "mqtt", "message": "link up"})     # not forwarded
+        app_mod._on_new_alert({"kind": "removed", "message": "gone"})     # not forwarded
+        self.assertEqual(sent, ["offline", "online"])
+
+    def test_noop_when_slack_disabled(self):
+        app_mod.slack = None
+        app_mod._on_new_alert({"kind": "offline", "message": "x"})   # must not raise
+
+    def test_notifier_exception_is_swallowed(self):
+        class BoomSlack:
+            def send_alert(self, alert):
+                raise RuntimeError("slack down")
+        app_mod.slack = BoomSlack()
+        app_mod._on_new_alert({"kind": "offline", "message": "x"})   # must not raise
+
+
 if __name__ == "__main__":
     unittest.main()

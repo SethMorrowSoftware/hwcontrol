@@ -135,5 +135,55 @@ class MismatchAlert(unittest.TestCase):
         self.assertEqual(len(self.mismatch_alerts(s)), 0)
 
 
+class AlertSink(unittest.TestCase):
+    """A registered on_alert sink is called once per newly-raised alert, OUTSIDE
+    the store lock. This is what feeds the Slack notifier: exactly one 'offline'
+    when a unit drops and one 'online' when it returns - no repeats while the
+    state is unchanged, and a sink that blows up never breaks a poll."""
+
+    def test_offline_then_online_fire_once_each(self):
+        seen = []
+        s = StateStore()
+        s.set_on_alert(lambda a: seen.append((a["kind"], a["deviceID"])))
+        s.ingest([raw(did="D1", isAlive=True)], 1)      # healthy first sight: no alert
+        s.ingest([raw(did="D1", isAlive=False)], 1)     # -> offline (once)
+        s.ingest([raw(did="D1", isAlive=False)], 1)     # still offline: no repeat
+        s.ingest([raw(did="D1", isAlive=True)], 1)      # -> online (once)
+        self.assertEqual([x for x in seen if x[0] == "offline"], [("offline", "D1")])
+        self.assertEqual([x for x in seen if x[0] == "online"], [("online", "D1")])
+
+    def test_first_seen_offline_fires_once(self):
+        seen = []
+        s = StateStore()
+        s.set_on_alert(lambda a: seen.append(a["kind"]))
+        s.ingest([raw(did="D1", isAlive=False)], 1)     # dead at startup -> alert
+        s.ingest([raw(did="D1", isAlive=False)], 1)     # still dead -> no repeat
+        self.assertEqual([k for k in seen if k in ("offline", "online")], ["offline"])
+
+    def test_healthy_unit_is_quiet(self):
+        seen = []
+        s = StateStore()
+        s.set_on_alert(lambda a: seen.append(a["kind"]))
+        s.ingest([raw(did="D1", isAlive=True)], 1)
+        s.ingest([raw(did="D1", isAlive=True)], 1)
+        self.assertEqual(seen, [], "an online unit that stays online must not notify")
+
+    def test_sink_exception_never_breaks_ingest(self):
+        def boom(_a):
+            raise RuntimeError("sink is down")
+        s = StateStore()
+        s.set_on_alert(boom)
+        s.ingest([raw(did="D1", isAlive=False)], 1)     # must not raise
+        self.assertTrue(any(a["kind"] == "offline" for a in s.alerts()),
+                        "the alert is still recorded even if the sink fails")
+
+    def test_add_alert_also_fires_sink(self):
+        seen = []
+        s = StateStore()
+        s.set_on_alert(lambda a: seen.append(a["kind"]))
+        s.add_alert("info", "mqtt", "link up")
+        self.assertEqual(seen, ["mqtt"])
+
+
 if __name__ == "__main__":
     unittest.main()
