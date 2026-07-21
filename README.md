@@ -215,8 +215,19 @@ when it returns.
    Workspace*) and copy the **Bot User OAuth Token** — it starts with `xoxb-`.
 4. **Invite the bot** to the channel you want the alerts in: in that channel,
    `/invite @your-app-name`. (A bot can only post to channels it's a member of;
-   skipping this gives a `not_in_channel` error in the logs.)
-5. **Configure `.env`:**
+   skipping this gives a `not_in_channel` error.)
+5. **Enter the token and channel** — either from the dashboard or in `.env`:
+
+   **From the dashboard (recommended):** open the **Alerts** tab → **Slack
+   notifications**, paste the bot token and the channel (its ID, e.g.
+   `C0123456789`, from *View channel details* — or a `#name`), click **Save**,
+   then **Send test message** to confirm it lands, and flip the switch **On**.
+   The token is stored on the server with `600` file permissions (like
+   `tokens.json`) and is never shown back in the browser — leave the field blank
+   to keep the saved one. No restart needed.
+
+   **Or via `.env`** (these are the startup defaults; a later dashboard save
+   overrides them):
 
    ```bash
    SLACK_ENABLED=true
@@ -224,9 +235,10 @@ when it returns.
    SLACK_CHANNEL=C0123456789        # the channel ID, or a #channel-name
    ```
 
-   The channel **ID** (from the channel's *View channel details*) is the most
-   robust; a `#name` also works. Restart the app; the startup log prints
-   `Slack alerts enabled (channel …)`.
+> **Entering a secret in the dashboard.** The token travels to the server over
+> the dashboard API, which sits behind only the light `DASHBOARD_TOKEN` gate — so
+> put the app behind a VPN or an authenticating reverse proxy before typing a
+> real token into the browser (the same advice as the access gate above).
 
 ### Behavior & reliability
 
@@ -647,7 +659,8 @@ Synchronous, thread-based, and deliberately boring for reliability:
 trigger values, for restart-safe edge detection), `rotations.json` (active
 duty-cycle rotations, so they resume after a restart), `groups.json` (named zone
 groups), `schedule_enforce.json` (the schedule-enforcement toggle),
-`sole_control.json` (the Sole Controller toggle).
+`sole_control.json` (the Sole Controller toggle), `slack_config.json` (Slack
+settings — enabled/channel/bot token; written `600` as it holds a secret).
 
 These are written to the current working directory. A manual run keeps them next
 to the code; the systemd service (below) puts them in `/var/lib/hwcontrol` so the

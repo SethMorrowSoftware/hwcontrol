@@ -149,6 +149,21 @@ class SlackNotifier:
             self._backlog_warned = time.monotonic()
             log.warning("Slack notify backlog is %d deep; Slack may be unreachable.", depth)
 
+    def send_now(self, text: str) -> tuple:
+        """Synchronously POST one message and return ``(ok, error)`` - used by the
+        dashboard's 'Send test message' button so it can report the real result
+        (including Slack's own error, e.g. ``channel_not_found``) immediately.
+        Bypasses the queue and does NOT retry: a test should fail fast with the
+        reason. Never raises."""
+        payload = {"channel": self.channel, "text": text}
+        try:
+            resp = self._session.post(POST_MESSAGE_URL, headers=self._headers,
+                                      data=json.dumps(payload), timeout=self.timeout)
+        except Exception as exc:
+            return False, str(exc)
+        ok, err = self._parse(resp)
+        return ok, ("" if ok else (err or "unknown_error"))
+
     @staticmethod
     def _format(alert: dict) -> str:
         kind = alert.get("kind", "")

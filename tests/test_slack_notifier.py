@@ -156,6 +156,34 @@ class Validation(unittest.TestCase):
             SlackNotifier("xoxb-x", "")
 
 
+class SendNow(unittest.TestCase):
+    """send_now() is the synchronous path behind the 'Send test message' button:
+    one POST, no retry, and it reports the real (ok, error)."""
+
+    def test_success(self):
+        n, sess, _ = make([FakeResp()])
+        self.assertEqual(n.send_now("hi"), (True, ""))
+        self.assertEqual(len(sess.calls), 1)
+
+    def test_reports_slack_error(self):
+        n, sess, _ = make([FakeResp(200, {"ok": False, "error": "channel_not_found"})])
+        ok, err = n.send_now("hi")
+        self.assertFalse(ok)
+        self.assertEqual(err, "channel_not_found")
+
+    def test_network_error_reported(self):
+        n, sess, _ = make([ConnectionError("boom")])
+        ok, err = n.send_now("hi")
+        self.assertFalse(ok)
+        self.assertIn("boom", err)
+
+    def test_single_attempt_no_retry(self):
+        n, sess, _ = make([FakeResp(500, body="NOJSON"), FakeResp()])
+        ok, err = n.send_now("hi")
+        self.assertFalse(ok)
+        self.assertEqual(len(sess.calls), 1, "a test send must not retry")
+
+
 class WorkerIntegration(unittest.TestCase):
     """End to end through the real worker thread: start -> send_alert -> stop
     delivers the queued messages, in order, formatted, to the right channel."""
