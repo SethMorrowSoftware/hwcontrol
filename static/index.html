@@ -934,6 +934,35 @@
   </section>
 
   <section class="view" id="view-alerts" role="tabpanel" aria-labelledby="tab-alerts" tabindex="0" hidden>
+    <!-- Slack notifications: a single message when a unit goes offline and when it returns -->
+    <div class="card-lg" id="slackCard" style="margin-bottom:16px">
+      <div class="brow" style="align-items:center;gap:12px;margin-bottom:6px">
+        <button class="toggle" id="slackToggle" role="switch" aria-checked="false" aria-label="Slack notifications" onclick="toggleSlack()"></button>
+        <div class="f grow" style="flex:3 1 240px">
+          <div style="font-weight:600">Slack notifications</div>
+          <div class="desc" id="slackDesc" style="margin:2px 0 0">Loading…</div>
+        </div>
+      </div>
+      <div class="form-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-top:6px">
+        <div>
+          <label for="slackChannel">Channel</label>
+          <input id="slackChannel" type="text" placeholder="C0123456789 or #alerts" autocomplete="off" spellcheck="false">
+        </div>
+        <div>
+          <label for="slackToken">Bot token (xoxb-…)</label>
+          <input id="slackToken" type="password" placeholder="xoxb-…" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+      <div class="desc" style="margin:10px 0 0;font-size:12px">
+        The token is stored on the server (file permissions <code>600</code>) and never shown here — leave the
+        field blank to keep the saved one. Create a Slack app, add the <b>chat:write</b> scope, install it, then
+        <b>/invite</b> the bot to the channel. The dashboard gate is light, so keep the app behind a VPN before entering secrets.
+      </div>
+      <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+        <button class="btn primary" id="slackSave" onclick="saveSlack(this)">Save</button>
+        <button class="btn ghost" id="slackTest" onclick="testSlack(this)">Send test message</button>
+      </div>
+    </div>
     <div class="filters" id="alertFilters" hidden></div>
     <div id="alertList"></div>
   </section>
@@ -979,7 +1008,7 @@ const qp = TOKEN ? ("?token="+encodeURIComponent(TOKEN)) : "";
 
 const state = { devices:[], pending:{}, autoStatus:{}, loaded:false, status:null,
   soleControl:true, scheduleEnforce:false, zoneQuery:"", alerts:[], alertFilter:"all",
-  bulkSel:new Set(), groups:[],
+  bulkSel:new Set(), groups:[], slack:null,
   // schedule readout: {zones:{id:{state,program,summary,programs}}, counts, enforce}
   sched:{zones:{}, counts:{}, enforce:false} };
 
@@ -1908,6 +1937,72 @@ async function toggleScheduleEnforce(){
     toast("Couldn't change: "+e.message,true);
   }
 }
+/* ---------- slack notifications ---------- */
+async function loadSlack(){
+  try{
+    const s = await api("/api/slack");
+    state.slack = s;
+    const tg=document.getElementById("slackToggle");
+    if(tg && !tg.hasAttribute("aria-busy")){
+      tg.classList.toggle("on",!!s.enabled); tg.setAttribute("aria-checked",!!s.enabled); }
+    // Don't clobber a field the user is mid-edit in.
+    const ch=document.getElementById("slackChannel");
+    if(ch && document.activeElement!==ch) ch.value = s.channel||"";
+    const tok=document.getElementById("slackToken");
+    if(tok) tok.placeholder = s.configured ? "•••• saved — blank keeps it" : "xoxb-…";
+    const d=document.getElementById("slackDesc");
+    if(d) d.textContent = s.enabled
+      ? (s.running ? "On — one message when a unit goes offline, one when it comes back online."
+                   : "Enabled, but not configured — add a bot token and channel below.")
+      : (s.configured ? "Off — a token is saved; flip the switch to start notifying."
+                      : "Off — add a bot token and channel, Save, then turn on.");
+  }catch(e){ /* keep the last-known UI on a transient fetch error */ }
+}
+async function toggleSlack(){
+  const next=!((state.slack||{}).enabled);
+  const tg=document.getElementById("slackToggle");
+  if(tg){ tg.classList.toggle("on",next); tg.setAttribute("aria-checked",next);
+    tg.setAttribute("aria-busy","true"); tg.style.pointerEvents="none"; }
+  try{
+    await api("/api/slack",{method:"POST",body:JSON.stringify({enabled:next})});
+    toast(next?"Slack notifications on":"Slack notifications off");
+  }catch(e){
+    if(tg){ tg.classList.toggle("on",!next); tg.setAttribute("aria-checked",!next); }
+    toast(e.message,true);
+  }finally{
+    if(tg){ tg.removeAttribute("aria-busy"); tg.style.pointerEvents=""; }
+    loadSlack();
+  }
+}
+/* Collect the form into a POST body, adding bot_token ONLY when the user typed
+   one (blank => keep the stored secret; the field is write-only). */
+function _slackBody(){
+  const body={channel:document.getElementById("slackChannel").value.trim()};
+  const t=document.getElementById("slackToken").value.trim();
+  if(t) body.bot_token=t;
+  return body;
+}
+async function saveSlack(btn){
+  try{
+    await withBusy(btn,()=>api("/api/slack",{method:"POST",body:JSON.stringify(_slackBody())}));
+    document.getElementById("slackToken").value="";   // don't leave the secret in the DOM
+    toast("Slack settings saved");
+  }catch(e){ toast(e.message,true); }
+  loadSlack();
+}
+async function testSlack(btn){
+  try{
+    // Save what's on screen first (if anything was typed) so the test uses it.
+    const body=_slackBody();
+    if(body.channel || body.bot_token){
+      await api("/api/slack",{method:"POST",body:JSON.stringify(body)});
+      document.getElementById("slackToken").value="";
+    }
+    await withBusy(btn,()=>api("/api/slack/test",{method:"POST"}));
+    toast("Test message sent — check your Slack channel");
+  }catch(e){ toast(e.message,true); }
+  loadSlack();
+}
 async function disableOnboard(id,btn){
   try{ await withBusy(btn,()=>api("/api/devices/"+id+"/onboard_schedule/disable",{method:"POST"}));
     toast("App is now holding "+deviceName(id)); loadOnboard(); setTimeout(loadDevices,1200);
@@ -2538,6 +2633,9 @@ function selectTab(btn){
     t.classList.toggle("active",sel); t.setAttribute("aria-selected",sel); t.tabIndex=sel?0:-1; });
   document.querySelectorAll(".view").forEach(v=>{ const on=v.id==="view-"+btn.dataset.tab;
     v.classList.toggle("active",on); v.hidden=!on; });
+  // Refresh Slack settings when the Alerts tab is opened (its 'running' state
+  // can change as the notifier is (re)built).
+  if(btn.dataset.tab==="alerts") loadSlack();
 }
 tabBtns.forEach((btn,i)=>{
   btn.addEventListener("click",()=>selectTab(btn));
@@ -2653,7 +2751,7 @@ resetAutoForm();          // one blank condition + empty actions
 resetGroupForm();         // zone-group form picker
 updateGeneratorPreview(); // seed the outage-plan preview + "listening" line
 tick(); setInterval(tick,15000);
-refreshStatus(); loadDevices(); loadScheduleStatus(); loadSchedules(); loadAlerts(); loadAutomations(); loadGroups();
+refreshStatus(); loadDevices(); loadScheduleStatus(); loadSchedules(); loadAlerts(); loadAutomations(); loadGroups(); loadSlack();
 setInterval(pollCycle, 10000);
 setInterval(()=>{ loadSchedules(true); loadGroups(); }, 30000);
 </script>

@@ -697,5 +697,141 @@ class StoreLocationHelpers(unittest.TestCase):
                          "an unreported isAlive must not read as 'came back online'")
 
 
+class SlackSettingsEndpoints(unittest.TestCase):
+    """The dashboard Slack settings API: persists enabled/channel/token, NEVER
+    echoes the token back, keeps a saved token when the field is left blank,
+    (re)builds the notifier on change, and guards enabling without credentials.
+    The notifier and the config file are faked so there's no thread or network."""
+
+    class FakeNotifier:
+        instances = []
+
+        def __init__(self, token, channel, **kw):
+            self.token, self.channel = token, channel
+            self.started = self.stopped = False
+            SlackSettingsEndpoints.FakeNotifier.instances.append(self)
+
+        def start(self): self.started = True
+        def stop(self): self.stopped = True
+        def send_now(self, text): return (True, "")
+        def send_alert(self, alert): pass
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._orig = (app_mod.SLACK_CONFIG_FILE, app_mod.SlackNotifier,
+                      app_mod.slack, app_mod.notify)
+        self._cfg = (app_mod.Config.SLACK_ENABLED, app_mod.Config.SLACK_BOT_TOKEN,
+                     app_mod.Config.SLACK_CHANNEL)
+        app_mod.SLACK_CONFIG_FILE = os.path.join(self._tmp.name, "slack_config.json")
+        app_mod.SlackNotifier = self.FakeNotifier
+        app_mod.slack = None
+        app_mod.notify = lambda *a: None
+        # Start from a clean slate regardless of the host's .env-derived defaults.
+        app_mod.Config.SLACK_ENABLED = False
+        app_mod.Config.SLACK_BOT_TOKEN = ""
+        app_mod.Config.SLACK_CHANNEL = ""
+        self.FakeNotifier.instances = []
+
+    def tearDown(self):
+        (app_mod.SLACK_CONFIG_FILE, app_mod.SlackNotifier,
+         app_mod.slack, app_mod.notify) = self._orig
+        (app_mod.Config.SLACK_ENABLED, app_mod.Config.SLACK_BOT_TOKEN,
+         app_mod.Config.SLACK_CHANNEL) = self._cfg
+        self._tmp.cleanup()
+
+    def test_get_defaults_unconfigured(self):
+        self.assertEqual(app_mod.api_slack_get(),
+                         {"enabled": False, "channel": "", "configured": False, "running": False})
+
+    def test_save_creds_and_enable_starts_notifier(self):
+        r = app_mod.api_slack_set({"bot_token": "xoxb-abc", "channel": "C1", "enabled": True})
+        self.assertEqual((r["enabled"], r["configured"], r["running"], r["channel"]),
+                         (True, True, True, "C1"))
+        self.assertNotIn("bot_token", r, "the token must never be returned to the client")
+        self.assertEqual(len(self.FakeNotifier.instances), 1)
+        self.assertTrue(self.FakeNotifier.instances[0].started)
+
+    def test_blank_token_keeps_the_saved_one(self):
+        app_mod.api_slack_set({"bot_token": "xoxb-abc", "channel": "C1", "enabled": True})
+        app_mod.api_slack_set({"channel": "C2"})   # channel-only edit, token field blank
+        cfg = app_mod._load_slack_config()
+        self.assertEqual((cfg["bot_token"], cfg["channel"]), ("xoxb-abc", "C2"))
+
+    def test_enable_without_creds_is_400(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            app_mod.api_slack_set({"enabled": True})
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_token_is_persisted_but_never_surfaced(self):
+        app_mod.api_slack_set({"bot_token": "xoxb-secret", "channel": "C1"})
+        self.assertNotIn("bot_token", app_mod._slack_public_state())
+        self.assertTrue(app_mod._slack_public_state()["configured"])
+        self.assertEqual(app_mod._load_slack_config()["bot_token"], "xoxb-secret")
+
+    def test_disable_stops_and_unsets(self):
+        app_mod.api_slack_set({"bot_token": "xoxb-abc", "channel": "C1", "enabled": True})
+        first = self.FakeNotifier.instances[0]
+        r = app_mod.api_slack_set({"enabled": False})
+        self.assertEqual((r["enabled"], r["running"]), (False, False))
+        self.assertTrue(first.stopped)
+
+    def test_test_endpoint_success_and_failure(self):
+        from fastapi import HTTPException
+        app_mod.api_slack_set({"bot_token": "xoxb-abc", "channel": "C1"})
+        self.assertEqual(app_mod.api_slack_test(), {"ok": True})
+
+        class FailNotifier(self.FakeNotifier):
+            def send_now(self, text): return (False, "channel_not_found")
+        app_mod.SlackNotifier = FailNotifier
+        with self.assertRaises(HTTPException) as ctx:
+            app_mod.api_slack_test()
+        self.assertEqual(ctx.exception.status_code, 502)
+        self.assertIn("channel_not_found", ctx.exception.detail)
+
+    def test_test_endpoint_requires_creds(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            app_mod.api_slack_test()
+        self.assertEqual(ctx.exception.status_code, 400)
+
+
+class SlackAlertDispatch(unittest.TestCase):
+    """_on_new_alert is the store's alert sink: it forwards ONLY unit
+    offline/online transitions to Slack, is a no-op when Slack isn't configured,
+    and never lets a notifier failure escape into the poller's alert path."""
+
+    def setUp(self):
+        self._orig = app_mod.slack
+
+    def tearDown(self):
+        app_mod.slack = self._orig
+
+    def test_forwards_offline_and_online_only(self):
+        sent = []
+
+        class FakeSlack:
+            def send_alert(self, alert):
+                sent.append(alert["kind"])
+        app_mod.slack = FakeSlack()
+        app_mod._on_new_alert({"kind": "offline", "message": "x went offline"})
+        app_mod._on_new_alert({"kind": "online", "message": "x is back online"})
+        app_mod._on_new_alert({"kind": "temp_high", "message": "hot"})    # not forwarded
+        app_mod._on_new_alert({"kind": "mqtt", "message": "link up"})     # not forwarded
+        app_mod._on_new_alert({"kind": "removed", "message": "gone"})     # not forwarded
+        self.assertEqual(sent, ["offline", "online"])
+
+    def test_noop_when_slack_disabled(self):
+        app_mod.slack = None
+        app_mod._on_new_alert({"kind": "offline", "message": "x"})   # must not raise
+
+    def test_notifier_exception_is_swallowed(self):
+        class BoomSlack:
+            def send_alert(self, alert):
+                raise RuntimeError("slack down")
+        app_mod.slack = BoomSlack()
+        app_mod._on_new_alert({"kind": "offline", "message": "x"})   # must not raise
+
+
 if __name__ == "__main__":
     unittest.main()

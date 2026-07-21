@@ -9,6 +9,7 @@ trigger_state.json
 onboard_backup.json
 sole_control.json
 schedule_enforce.json
+slack_config.json
 groups.json
 # Atomic-write backups of the runtime state files above.
 *.json.bak

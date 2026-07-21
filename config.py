@@ -99,6 +99,16 @@ class Config:
     MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "")
     MQTT_BASE_TOPIC = os.getenv("MQTT_BASE_TOPIC", "honeywell")
 
+    # --- Slack alerts (optional) ---
+    # When enabled, a unit going offline (and coming back online) posts a single
+    # message to a Slack channel via chat.postMessage, using a Slack *bot* token
+    # (starts with "xoxb-"). The edge logic lives in the alert layer, so you get
+    # exactly one message per transition. Needs both a token and a channel; if
+    # either is missing the feature stays off (a warning is logged at startup).
+    SLACK_ENABLED = _bool("SLACK_ENABLED", False)
+    SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
+    SLACK_CHANNEL = os.getenv("SLACK_CHANNEL", "")  # channel ID (C0123...) or #name
+
     # --- Scheduler ---
     SCHEDULE_TZ = os.getenv("SCHEDULE_TZ", "")  # e.g. "America/New_York"; blank = system tz
 
@@ -148,6 +158,7 @@ class Config:
         # Make the resolved safety-critical flags visible at startup so a silent
         # misconfiguration (e.g. Sole Controller unexpectedly off) is obvious.
         log.info("Config: SOLE_CONTROLLER=%s SCHEDULE_ENFORCE=%s MQTT_ENABLED=%s "
-                 "POLL_INTERVAL_SECONDS=%s PORT=%s SCHEDULE_TZ=%s",
+                 "SLACK_ENABLED=%s POLL_INTERVAL_SECONDS=%s PORT=%s SCHEDULE_TZ=%s",
                  cls.SOLE_CONTROLLER, cls.SCHEDULE_ENFORCE, cls.MQTT_ENABLED,
-                 cls.POLL_INTERVAL_SECONDS, cls.PORT, cls.SCHEDULE_TZ or "(server local time)")
+                 cls.SLACK_ENABLED, cls.POLL_INTERVAL_SECONDS, cls.PORT,
+                 cls.SCHEDULE_TZ or "(server local time)")
